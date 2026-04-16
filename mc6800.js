@@ -56,12 +56,13 @@ function TekCpu(hw) {
     // Establish the MIPS = Millions of Instructions Per Second
     // 0.833 is specific to the 6800 processor
     const MIPS = 0.833;
+	const SPDF = 368;
     
     // When the TekCpu object is created, its execute() function will
     // be called 100 times per second in a SetInterval. To faithfully emulate
     // the actual speed of a 6800, compute the number of instructions that will
     // be executed in one execute() function call interval.
-    const InstructionsPerInterval = (MIPS*1000000/408);  // profiled to match my 4051 benchmarks
+    let InstructionsPerInterval = (MIPS*1000000/SPDF);  // profiled to match my 4051 benchmarks
     //console.log("InstructionsPerInterval = " + InstructionsPerInterval);
 
     // Change this value to true if you want to see some processor executions logged to the console
@@ -185,7 +186,7 @@ function TekCpu(hw) {
     
     function writeByte( address, val ) {
         // This calls the hardware outside of the CPU object
-       return hw.pokeb( address, val );
+       hw.pokeb( address, val );
     }
     
     function readWord( address ) {
@@ -2404,6 +2405,11 @@ function TekCpu(hw) {
     this.getLastPC = function() {
         return lastPC;
     }
+	
+	this.setIPI = function( sf ) {
+		let spdfactor = SPDF/sf; 
+		InstructionsPerInterval = (MIPS*1000000/spdfactor);
+	}
 
 	// -------------------------------------------------------------------------------------
 	// Debug helper functions
@@ -2436,4 +2442,7 @@ function TekCpu(hw) {
 		return string;
     }
 
+
+
+	
 } // End function TekCpu.

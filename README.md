@@ -6,29 +6,36 @@ and enhanced by Jon Stanley found here:
 
 https://github.com/jonbstanley/Tek405xEmulator
 
----
 
-For details of releases including bug fixes and what is new see <a href="https://github.com/Twilight-Logic/Tek405xEmulator/blob/master/Releases.md">Releases.md</a>.
 
----
+Further additions by Twilight Logic (15 Oct 2021):
 
-<B>Additions by Monty McGraw:</B>
+- added feature to allow import/export of files between the JavaScript emulator and Monty's Arduino 4924 emulator
 
-Update 02 Nov 2021
+- added feature to allow the entire storage to be archived/imported as a single "tape" file archive"
 
-  - the display has been updated to enable refresh graphics
 
-Previous:
+Additions by Twilight Logic:
 
- - Added new "UNIVERSAL" HTML emulator file that is compatible with all 4050 Control Characters
+- added feature to drag and drop files on to the storage window
 
-I plan to begin converting ALL my older program captures - to a universal format compatible with the universal emulator HTLM file AND the 4051, 4052, 4052A and 4054A computers.
+- added local storage features to enable programs to be stored in the browser and accessed like an external tape drive
 
+
+
+Additions by Monty McGraw:
+
+
+Added new "UNIVERSAL" HTML emulator file that is compatible with all 4050 Control Characters
+---------------------------------------------------------------------------------------
+I plan to begin converting ALL my older program captures - to a universal format compatible with the universal emulator HTLM file      AND the 4051, 4052, 4052A and 4054A computers.
+-----------
 For the older programs from the Programs directory, and my older programs on the 4050 Program repository that have Character, backspace, underline - execute the older HTML file
+--------------
 
----
 
-Detailed description by Dave R.:
+
+Detailed description by Dave:
 
 
 Tektronix 4051 Javascript emulator

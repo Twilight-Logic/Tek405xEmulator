@@ -13,7 +13,7 @@ function TekKeyboard(hw, windowobj) {
 		var i = 0;
 
 
-		//console.log("Key pressed: " + k + "  ASCII code: " + k.charCodeAt());
+//		console.log("Key pressed: " + k + "  ASCII code: " + k.charCodeAt());
 
 
 		//@@@ this.print('Key = '); this.printHex4( i ); this.print(' bool = '); this.print( bool ); this.print(' PC=0x'); this.printHex4( this.last_PC ); this.println('');
@@ -49,6 +49,7 @@ function TekKeyboard(hw, windowobj) {
 
 		// Decide which key to use (some keys require translation to Tek codes)
 		if ( k != '' ) {
+//console.log("Received: " + k);
 			if ( k.length > 1 ) {
 				// Look up the key ASCII character
 				i = keyLookup(k);
@@ -68,8 +69,8 @@ function TekKeyboard(hw, windowobj) {
 			}
 		}
 
-		// console.log("Key to Tek: " + i);
-		// console.log("Shift status: " + hw.KBD_SHIFT_0);	// Down = 0, UP = 1;
+//		 console.log("Key to Tek: " + i);
+//		 console.log("Shift status: " + hw.KBD_SHIFT_0);	// Down = 0, UP = 1;
 
 		
 		// Check for a key press or key release.
@@ -78,6 +79,8 @@ function TekKeyboard(hw, windowobj) {
 		} else {
 		    hw.keyboardRelease();
 		}
+
+//console.log("Returned: " + i);
 
 		// console.log("Done.");
 
@@ -98,10 +101,10 @@ function TekKeyboard(hw, windowobj) {
 
 	// Hardware key events
     function handleEvent( e ) {
-        var storage = document.getElementById('storage');
+        var storageDlg = document.getElementById('storageDialog');
 		// If storage dialog is displayed then ignore and return
-        if (storage) {
-            if (storage.style.display=="block") return;
+        if (storageDlg) {
+            if (storageDlg.style.display=="block") return;
         }
 		// Did we get an emulated keypress scan code
 		if (e.detail.scancode) {
@@ -289,20 +292,30 @@ function TekKeyboard(hw, windowobj) {
 			case "Control"     : return 0x11; break;
 			case "Capslock"    : return 0x14; break;
 			case "ContextMenu" : return 0x00; break;
-			case "Delete"      : return 0x5F; break;	// Rubout
+            case "Delete"      : return 0x5F; break;
+/*
+			case "Delete"      :                        // Rubout
+                    var UA = navigator.userAgent;
+                    if(UA.match(/firefox|fxios/i)){
+                        return 0x08;    // FF gets stuck on sending Delete (5F) so send Backspace (0x08) instead
+                    }else{
+                        return 0x5F;
+                    }
+                    break;
+*/
 			case "End"         : return 0x6B; break;	// BREAK
 			case "Enter"       : return 0x0D; break;
 			case "Escape"      : return 0x1B; break;
-			case "F1"   	   : return 0x60; break; 
-			case "F2"   	   : return 0x61; break; 
-			case "F3"   	   : return 0x62; break; 
-			case "F4"   	   : return 0x63; break; 
-			case "F5"   	   : return 0x64; break; 
-			case "F6"   	   : return 0x65; break; 
-			case "F7"   	   : return 0x66; break;
-			case "F8"   	   : return 0x67; break; 
-			case "F9"   	   : return 0x68; break; 
-			case "F10"   	   : return 0x69; break; 
+			case "F1"   	   : return 0x60; break;    // User key 1 
+			case "F2"   	   : return 0x61; break;    // User key 2
+			case "F3"   	   : return 0x62; break;    // User key 3
+			case "F4"   	   : return 0x63; break;    // User key 4
+			case "F5"   	   : return 0x64; break;    // User key 5
+			case "F6"   	   : return 0x65; break;    // User key 6
+			case "F7"   	   : return 0x66; break;    // User key 7
+			case "F8"   	   : return 0x67; break;    // User key 8
+			case "F9"   	   : return 0x68; break;    // User key 9 
+			case "F10"   	   : return 0x69; break;    // User key 10 
 			case "F11"   	   : return 0x00; break; 
 			case "F12"   	   : return 0x00; break;
 			case "F13"   	   : return 0x6A; break;	// [Mac] PAGE 
@@ -312,7 +325,7 @@ function TekKeyboard(hw, windowobj) {
 			case "F17"   	   : return 0x76; break;	// [Mac] STEP PROG 
 			case "F18"   	   : return 0x00; break;	// [Mac]
 			case "F19"   	   : return 0x00; break;	// [Mac]
-			case "Home"        : return 0x6A; break; 	// PAGE£
+			case "Home"        : return 0x6A; break; 	// PAGE
 			case "Insert"      : return 0x73; break; 	// CLEAR
 			case "NumLock"     : return 0x70; break; 
 			case "PageDown"    : return 0x00; break;

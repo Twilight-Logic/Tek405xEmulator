@@ -1,180 +1,189 @@
 
 body 
 {
-    background: #888888;
-    text-align: center;
-    font-family: Arial, Helvetica, sans-serif;
+  background: #888888;
+  text-align: center;
+  font-family: Arial, Helvetica, sans-serif;
 }
 
 #container
 {
-    position: relative;
-    padding: 10px;
-    width: 1400px;
-    margin: auto;
+  position: relative;
+  padding: 10px;
+  width: 1400px;
+  height: 1100px;
+  margin: auto;
+  transform-origin: 0 0;
 }
+
 
 .inline
 {
-    display: inline-block;
-    vertical-align: middle;
+  display: inline-block;
+  vertical-align: middle;
 }
 
 .inlinekeys
 {
-    display: inline-block;
-    vertical-align: top;
-    margin: 0 10px;
+  display: inline-block;
+  vertical-align: top;
+  margin: 0 10px;
 }
 
 .status
 {
-    width: 90px;
-    height: 40px;
-    margin: 50px auto;
-    margin-left: 80px;
-    border: medium solid #AAAAAA;
-    border-radius: 5px;
-    text-align: center;
-    vertical-align: middle;
-    line-height: 40px;
-    background: #000000;
-    color: #005500;
-    font-size: 1em;
-    font-weight: bold;
+  width: 90px;
+  height: 40px;
+  margin: 50px auto;
+  margin-left: 80px;
+  border: medium solid #AAAAAA;
+  border-radius: 5px;
+  text-align: center;
+  vertical-align: middle;
+  line-height: 40px;
+  background: #000000;
+  color: #005500;
+  font-size: 1em;
+  font-weight: bold;
 }
 
 table 
 {
-    line-height:140%; 
-    padding:2px;
-    text-align: center;
+  line-height:140%; 
+  padding:2px;
+  text-align: center;
 }
 
 #screen
 {
-    width: 838px;
-    height: 668;
-    display: block;
-	margin: 0 auto;
-	border: medium solid #AAAAAA;
-	border-radius: 25px;
+  width: 838px;
+  height: 668;
+  display: block;
+  margin: 0 auto;
+  border: medium solid #AAAAAA;
+  border-radius: 25px;
+  image-rendering: pixelated;
 }
 
 #keyboard
 {
-#   text-align: left;
-    margin-top: 15px;
+#  text-align: left;
+  margin-top: 15px;
 }
 
 .keys
 {
-    color: #FFFFDD;
-    font-size: 1em;
+  color: #FFFFDD;
+  font-size: 1em;
 }
 
 .wider
 {
-    width: 7em;
-    height: 2em;
+  width: 7em;
+  height: 2em;
 }
 
 .key
 {
-    width: 45px;
-    height: 12px;
-    border: 2px solid #333333;
-    background: #AAAAAA;
-    cursor: pointer;
-    margin: auto;
+  width: 45px;
+  height: 12px;
+  border: 2px solid #333333;
+  background: #AAAAAA;
+  cursor: pointer;
+  margin: auto;
 }
 
 .kbkey
 {
-    width: 50px;
-    height: 50px;
-    border: 2px solid #333333;
-    background: #666666;
-    cursor: pointer;
-    margin: auto;
-    border-radius: 6px;
-    display: table-cell;
-    vertical-align: middle;
+  width: 50px;
+  height: 50px;
+  border: 2px solid #333333;
+  background: #666666;
+  cursor: pointer;
+  margin: auto;
+  border-radius: 6px;
+  display: table-cell;
+  vertical-align: middle;
 }
 
 .kbkeylight
 {
-    width: 50px;
-    height: 50px;
-    border: 2px solid #333333;
-    background: #8c8c8c;
-    cursor: pointer;
-    margin: auto;
-    border-radius: 6px;
-    display: table-cell;
-    vertical-align: middle;
+  width: 50px;
+  height: 50px;
+  border: 2px solid #333333;
+  background: #8c8c8c;
+  cursor: pointer;
+  margin: auto;
+  border-radius: 6px;
+  display: table-cell;
+  vertical-align: middle;
 }
 .kbkeybreak
 {
-    width: 50px;
-    height: 50px;
-    border: 2px solid #333333;
-    background: #b38f00;
-    cursor: pointer;
-    margin: auto;
-    border-radius: 6px;
-    display: table-cell;
-    vertical-align: middle;
+  width: 50px;
+  height: 50px;
+  border: 2px solid #333333;
+  background: #b38f00;
+  cursor: pointer;
+  margin: auto;
+  border-radius: 6px;
+  display: table-cell;
+  vertical-align: middle;
 }
 
 .centerline {
-   width: 90%;
-   margin: auto;
-   text-align: center; 
-   padding: 10px;
-   height: 1em;
+  width: 90%;
+  margin: auto;
+  text-align: center; 
+  padding: 10px;
+  height: 1em;
 }
 
 .centerline div {
-   width: 100%;
-   border-bottom: 2px solid #FFFFDD; 
-   margin-top: 0px;
-   height: 50%;
+  width: 100%;
+  border-bottom: 2px solid #FFFFDD; 
+  margin-top: 0px;
+  height: 50%;
 }
 
 .centerline span { 
-    background: #888888;
-    padding: 0 5px;
-    margin: auto;
+  background: #888888;
+  padding: 0 5px;
+  margin: auto;
 }
 
 .mainbtn {
-    width:	     80px;
-    height:          24px;
-    vertical-align:  bottom;
+  width:	     80px;
+  height:          24px;
+  vertical-align:  bottom;
 }
 
 
 /* Styling related to Storage window */
 
-#storage
-{
-    text-align: left;
-    position: absolute;
-    margin: auto;
-    left: 295px;
-    top: 50px;
-    border: solid #aaaaaa 2px;
-    padding: 10px;
-    color: #80ff00;
-    background-color: #777777;
-    opacity: 0.93;
-    font-size: 12px;
-    font-family: verdana;
-    width: 620px;
-    height: 570px;
-    box-shadow: 5px 5px 2px #333333;
+.popup {
+  text-align: left;
+  position: absolute;
+  margin: auto;
+  left: 295px;
+  top: 50px;
+  border: solid #aaaaaa 2px;
+  padding: 10px;
+  color: #80ff00;
+  background-color: #777777;
+  opacity: 0.93;
+  font-size: 12px;
+  font-family: verdana;
+  width: 620px;
+  height: 570px;
+  box-shadow: 5px 5px 2px #333333;
 }
+
+.popupbtn
+{
+  width: 60px;
+}
+
 
 #fileViewer
 {
@@ -190,19 +199,22 @@ table
 {
   width:  35px;
 }
-/*
-#fileSecret
+
+#fname
 {
-  width:  40px;
+  font-family:  monospace;
+  white-space:  pre;
+  font-size:    10px;
 }
-*/
+
 #fileDesc
 {
   width: 160px;
 }
+
 #fileSize
 {
-  width:  56px;
+  width:  70px;
 }
 
 #fileInfoCtrls
@@ -254,30 +266,116 @@ table
   width:  200px;
 }
 
-#storebtns1
+#dlgbtns1
 {
   position: absolute;
   left: 10px;
   bottom: 20px;
 }
 
-#storebtns3
+#dlgbtns3
 {
   position: absolute;
   right: 10px;
   bottom: 20px;
 }
 
-.storestyle1
+.dlgstyle1
 {
   border: 2px solid #aaaaaa;
   color: #ffffff;
   background-color: #202020;
 }
 
-.storebtn
+
+
+#storageNotify
 {
-  width: 60px;
+  position: absolute;
+  text-align: center;
+  width: 80%;
+  margin: auto;
+  padding: 10px;
+  top: 40%;
+  left: 50px;
+  border: 2px solid #aaaaaa;
+  color: #ffffff;
+  background-color: #335577;
+  font-size: 14px;
+  font-family: verdana;
 }
 
 
+
+.scaling
+{
+  position: fixed;
+  top: 0px;
+  left: 0px;
+  height: 46px;
+  width: 46px;
+  border: 1px;
+  border-color: #bbbbbb;
+  border-style: outset;
+  z-index: 1;
+}
+
+.side-menu-content
+{
+  position: relative;
+  top: 2px;
+  font-size: 30px;
+  text-align: center;
+  color: #bbbbbb;
+  background: #888888;
+  border: none;
+}
+
+.cpuspeed
+{
+  position: fixed;
+  top: 48px;
+  left: 0px;
+  height: 46px;
+  width: 46px;
+  border: 1px;
+  border-color: #bbbbbb;
+  border-style: outset;
+  z-index: 2;
+}
+
+.pixelsize
+{
+  position: fixed;
+  top: 96px;
+  left: 0px;
+  height: 46px;
+  width: 46px;
+  border: 1px;
+  border-color: #bbbbbb;
+  border-style: outset;
+  z-index: 3;
+}
+
+.cpuspeedval
+{
+  position: fixed;
+  top: 78px;
+  left: 2px;
+  font-size: 9px;
+  text-align: center;
+  color: #bbbbbb;
+  background: #888888;
+  border: none;
+  z-index: 2;
+}
+
+#deviceViewer
+{
+  border: 2px solid #aaaaaa;
+  width:  620px;
+  height: 410px;
+  color: #ffffff;
+  background-color: #505050;
+  resize: none;
+}
