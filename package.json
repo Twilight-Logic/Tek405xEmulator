@@ -1,0 +1,16 @@
+{
+  "name": "jonstanley-mod-storage-new-cpu-20240424",
+  "version": "1.0.0",
+  "description": "4051 Emulator",
+  "main": "Tektronix4051.html",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "WaveyDipole",
+  "license": "ISC",
+  "devDependencies": {
+    "@eslint/js": "^9.1.1",
+    "eslint": "^9.1.1",
+    "globals": "^15.0.0"
+  }
+}
