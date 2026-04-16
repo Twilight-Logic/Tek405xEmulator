@@ -1,0 +1,4322 @@
+
+/*
+ *
+ * JSMSX - MSX Emulator in Javascript
+ * Copyright (c) 2006 Marcus Granado <mrc.gran(@)gmail.com>
+ *
+ * Portions of the initial code was inspired by the work of
+ * Arnon Cardoso's Java MSX Emulator and
+ * Adam Davidson & Andrew Pollard's Z80 class of the Spectrum Java Emulator
+ * after reading this thread: http://www.msx.org/forumtopic4176.html
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * version 2 as published by the Free Software Foundation.
+ * The full license is available at http://www.gnu.org/licenses/gpl.html
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * Completely revamped to the MC6800 CPU by Dave Roberts based on the work of William Beech.
+ * January 2018 - Further updated by Jon Stanley with some reorganization and TekExtended instructions.
+ *
+ * m6800.c: SWTP 6800 CPU simulator
+
+   Copyright (c) 2005-2011, William Beech
+
+   Permission is hereby granted, free of charge, to any person obtaining a
+   copy of this software and associated documentation files (the "Software"),
+   to deal in the Software without restriction, including without limitation
+   the rights to use, copy, modify, merge, publish, distribute, sublicense,
+   and/or sell copies of the Software, and to permit persons to whom the
+   Software is furnished to do so, subject to the following conditions:
+
+   The above copyright notice and this permission notice shall be included in
+   all copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+   WILLIAM A. BEECH BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+   IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+   Except as contained in this notice, the name of William A. Beech shall not
+   be used in advertising or otherwise to promote the sale, use or other dealings
+   in this Software without prior written authorization from William A. Beech.
+ *
+ */
+
+   "use strict";
+
+   function TekCpu(hw) {
+
+    // Establish the MIPS = Millions of Instructions Per Second
+    // 0.833 is specific to the 6800 processor
+    const MIPS = 0.833;
+	const SPDF = 1311.1;
+    
+    // When the TekCpu object is created, its execute() function will
+    // be called 100 times per second in a SetInterval. To faithfully emulate
+    // the actual speed of a 6800, compute the number of instructions that will
+    // be executed in one execute() function call interval.
+    let InstructionsPerInterval = (MIPS*1000000/SPDF);  // profiled to match my 4051 benchmarks
+    //console.log("InstructionsPerInterval = " + InstructionsPerInterval);
+
+    // Change this value to true if you want to see some processor executions logged to the console
+    const DebugExecutePrint = true;
+    
+//    var instruction_mnemonic;
+    let instruction_operand;
+//    var instruction_description;
+
+	let oldNMI = 0;
+	let oldIRQ = 0;
+    let lastPC = 0xDEAD;
+    
+    let LI = false;
+
+	// NOTE: The Motorola MC6800 stores the most significant byte of a word at the lower address.
+	
+	// -------------------------------------------------------------------------------------
+	// 6800 vectors
+	// -------------------------------------------------------------------------------------
+	
+    const IRQ_VECTOR   = 0xFFF8;
+    const SWI_VECTOR   = 0xFFFA;
+    const NMI_VECTOR   = 0xFFFC;
+    const RESET_VECTOR = 0xFFFE;
+	
+	// -------------------------------------------------------------------------------------
+	// 6800 registers
+	// -------------------------------------------------------------------------------------
+	
+	var A   = 0x00;   // Accumulator A (8 bits)
+	var B   = 0x00;   // Accumulator B (8 bits)
+	var IX  = 0x0000; // Index register (16 bits)
+	var PC  = 0x0000; // Program counter (16 bits)
+	var SP  = 0x0000; // Stack pointer (16 bits)
+	var CCR = 0x00;   // Condition code register (8 separate bits) aka Status Register
+	var IR  = 0x00;   // Instruction Register (8 bits)
+	
+	// -------------------------------------------------------------------------------------
+	// 6800 bit constants
+	// -------------------------------------------------------------------------------------
+	
+	const ADDR_MASK = 0xFFFF; // 16 bits.
+	
+	// Flag bit positions in CCR
+	const FS = 0x80; // Fetch Space (ROM) select - Tektronix 4052/54 only
+	const DS = 0x40; // Data Space (RAM) select - Tektronix 4052/54 only
+	const HF = 0x20; // Half carry
+	const IF = 0x10; // Interrupt mask
+	const NF = 0x08; // Negative
+	const ZF = 0x04; // Zero
+	const VF = 0x02; // Overflow
+	const CF = 0x01; // Carry
+	
+	// For a 6800, the upper 2 bits of the CCR are unused
+	const CCR_ALWAYS_ON = 0xC0; 
+	const CCR_MASK = HF | IF | NF | ZF | VF | CF;
+	
+	// -------------------------------------------------------------------------------------
+	// Condition Code Register (aka Status Register) helper functions
+	// -------------------------------------------------------------------------------------
+	
+	function TOGGLE_FLAG( FLAG ) {
+		CCR ^= FLAG;
+	}
+
+	function GET_FLAG( FLAG ) {
+    	if( CCR & FLAG ) return 1;
+    	else             return 0;
+	}
+	
+	function SET_FLAG( FLAG ) {
+		CCR |= FLAG;
+	}
+	
+	function CLR_FLAG( FLAG ) {
+		CCR &= ~FLAG;
+	}
+
+	function GET_FLAG_BITS( FLAG ) {
+		return CCR & FLAG;
+	}
+
+	function COND_SET_FLAG( COND, FLAG ) {
+		if( COND ) SET_FLAG( FLAG ); 
+		else       CLR_FLAG( FLAG );
+	}
+
+	function COND_SET_FLAG_N( VAR ) {
+		if( VAR & 0x80 ) SET_FLAG( NF );
+		else             CLR_FLAG( NF );
+	}
+		
+	function COND_SET_FLAG_Z( VAR ) {
+		if( VAR == 0 ) SET_FLAG( ZF );
+		else           CLR_FLAG( ZF );
+	}
+		
+	function COND_SET_FLAG_H( COND ) {
+		if( COND ) SET_FLAG( HF );
+		else       CLR_FLAG( HF );
+	}
+		
+	function COND_SET_FLAG_C( VAR ) {
+		if( VAR & 0x100 ) SET_FLAG( CF );
+		else              CLR_FLAG( CF );
+	}
+		
+	function COND_SET_FLAG_V( COND ) {
+		if( COND ) SET_FLAG( VF );
+		else       CLR_FLAG( VF );
+	}
+		
+	
+	// -------------------------------------------------------------------------------------
+	// Memory access functions
+	// -------------------------------------------------------------------------------------
+
+    function readByte( address ) {
+        // This calls the hardware outside of the CPU object
+		return hw.peekb( address );
+    }
+    
+    function writeByte( address, val ) {
+        // This calls the hardware outside of the CPU object
+       return hw.pokeb( address, val );
+    }
+    
+    function readWord( address ) {
+		var temp = address;
+		var val  = readByte(   temp             ) << 8; // MSB
+		val     |= readByte( ++temp & ADDR_MASK )     ; // LSB
+		return val;
+    }
+    
+    function writeWord( address, val ) {
+    	writeByte( (address+0) & ADDR_MASK, (val >>> 8) & 0xFF ); // MSB
+    	writeByte( (address+1) & ADDR_MASK, (val >>> 0) & 0xFF ); // LSB
+    }
+ 
+    // -------------------------------------------------------------------------------------
+	// Memory access helper functions for instruction and operand read and write accesses
+	// -------------------------------------------------------------------------------------
+    
+    // fetch a byte from location in PC
+    function fetch_byte() {
+    	var val = readByte( PC ) & 0xFF;  // fetch byte at address in PC
+	    PC = (PC + 1) & ADDR_MASK; // increment PC by 1
+    	return val;
+    }
+    
+    // fetch a 16-bit word from location in PC
+    function fetch_word() {
+    	var val  = readByte( PC ) << 8;       // fetch high byte
+	    val     |= readByte( PC + 1 ) & 0xFF; // fetch low byte
+	    PC = (PC + 2) & ADDR_MASK;         // increment PC by 2
+    	return val;
+    }
+    
+	// push a byte to the stack and decrement Stack Pointer
+	function push_byte( val ) {
+    	writeByte( SP, val & 0xFF );   // push byte at address in SP
+    	SP = (SP - 1) & ADDR_MASK; // decrement SP by 1
+	}
+
+	// push a 16-bit word to the stack (2 byte pushes)
+	function push_word( val ) {
+    	push_byte( val & 0xFF );  // push low byte
+    	push_byte( val >>> 8  );  // push high byte
+	}
+
+	// pop a byte from the stack and increment Stack Pointer
+	function pop_byte() {
+    	SP = (SP + 1) & ADDR_MASK; // increment SP by 1
+    	return readByte( SP );        // fetch byte at address in SP
+	}
+
+	// pop a 16-bit word from the stack (2 byte pops)
+	function pop_word() {
+    	var res = pop_byte() << 8; // fetch high byte
+    	res |= pop_byte();         // fetch low byte
+    	return res;
+	}
+	
+	// -------------------------------------------------------------------------------------
+	// Helper function for branch instruction execution and decision making
+	// -------------------------------------------------------------------------------------
+
+	// PC will jump to relative offset if the condition is met, otherwise PC remains unchanged
+	function branch_relative( cond ) {
+	    // Fetch relative offset from memory
+    	var temp = get_relative_addr();
+    	if( cond ) {
+        	PC += temp;
+        	// console.log('>>> BRANCH TAKEN <<<');
+        } else {
+        	// console.log('>>> BRANCH NOT TAKEN <<<');
+        }
+        // Keep address truncated to 16-bits
+    	PC &= ADDR_MASK;
+	}
+    
+	// -------------------------------------------------------------------------------------
+	// Address operand fetch and computation helper functions for instruction execution
+	// -------------------------------------------------------------------------------------
+
+    // Summary of Address Modes:
+    // 1. Relative - 8-bit sign extended address from 2nd operand is added to PC
+    // 2. Direct   - 8-bit absolute address from 2nd operand for lower 256 bytes of memory
+    // 3. Extended - 16-bit absolute address from 2nd operand = upper, 3rd operand = lower
+    // 4. Indexed  - 8-bit zero-extended address from 2nd operand is added to 16-bit Index Register (IX)
+
+
+	// returns the relative offset (8-bits) sign-extended at the address pointed to by PC
+	// rel_addr = sign_extend(operand byte)
+	function get_relative_addr() {
+	    instruction_operand = ", RELATIVE";
+    	var temp = fetch_byte(); // fetch byte at location in PC
+    	if( temp & 0x80 ) // Sign-extend offset if MSB is set
+        	temp |= 0xFF00;
+    	return temp & ADDR_MASK;
+	}
+
+	// returns the data value at the direct address pointed to by PC
+	function get_direct_data() {
+		return readByte( get_direct_addr() );
+	}
+
+	// returns the direct address (8-bits) pointed to by PC
+	// dir_addr = operand byte
+	function get_direct_addr() {
+	    instruction_operand = ", DIRECT";
+    	return fetch_byte() & 0xFF; // fetch byte at location in PC
+	}
+
+	// returns the data value at the indexed (indirect) address
+	function get_indexed_data() {
+    	return readByte( get_indexed_addr() );
+	}
+
+	// returns the indexed (indirect) address pointed to by PC relative to Index Register
+	// indir_addr = operand byte + IX
+	function get_indexed_addr() {
+	    instruction_operand = ", INDIRECT";
+    	return (fetch_byte() + IX) & ADDR_MASK; // fetch byte at location in PC and offset by IX
+	}
+
+	// returns the data value at the extended address pointed to by PC
+	function get_extended_data() {
+    	return readByte( get_extended_addr() );
+	}
+
+	// returns the extended (16-bit) direct address pointed to by PC
+	// ext_addr = 16-bit operand word
+	function get_extended_addr() {
+	    instruction_operand = ", EXTENDED";
+		return fetch_word(); // fetch 16-bit word at location in PC
+	}	
+		
+    
+    // -------------------------------------------------------------------------------------
+    // Processor Instructions
+    // -------------------------------------------------------------------------------------
+
+// you can do: funcs = [ [0x01]() [ ... ], [0xFF]() [ .. ]
+
+
+    const instr = [
+        [0x00, NOP, "NOP", "No operation"],
+        [0x01, NOP, "NOP", "No operation"],
+        [0x02, NOP, "NOP2", "(TekExtended) No operation"],
+        [0x03, TXINS, "SFA", "(TekExtended) Store A <= F?"],
+        [0x04, NOINS, "INV", "Invalid"],
+        [0x05, TXINS, "TAP", "(TekExtended) Transfer Status Register P <= A?"],
+        [0x06, TAP, "TAP", "(6800) Transfer Status Register P <= A"],
+        [0x07, TPA, "TPA", "(6800) Transfer A <= Status Register P"],
+        [0x08, INX, "INX", "(6800) Increment IX"],
+        [0x09, DEX, "DEX", "(6800) Decrement IX"],
+        [0x0A, CLV, "CLV", "(6800) Clear overflow status bit"],
+        [0x0B, SEV, "SEV", "(6800) Set overflow status bit"],
+        [0x0C, CLC, "CLC", "(6800) Clear carry status bit"],
+        [0x0D, SEC, "SEC", "(6800) Set carry status bit"],
+        [0x0E, CLI, "CLI", "(6800) Clear interrupt mask status bit"],
+        [0x0F, SEI, "SEI", "(6800) Set interrupt mask status bit"],
+
+        [0x10, SBA, "SBA", "(6800) Store A <= A - B"],
+        [0x11, CBA, "CBA", "(6800) Compare A - B"],
+        [0x12, TXINS, "TAPX", "(TekExtended) Transfer Extended Status Register PX <= A?"],
+        [0x13, TXINS, "TPAX", "(TekExtended) Transfer A <= Extended Status Register?"],
+        [0x14, TXINS, "ADXI", "(TekExtended) ???"],
+        [0x15, TXINS, "ASPI", "(TekExtended) ???"],
+        [0x16, TAB, "TAB", "(6800) Transfer A => B"],
+        [0x17, TBA, "TBA", "(6800) Transfer B => A"],
+        [0x18, TXINS, "SDA", "(TekExtended) Store A <= D?"],
+        [0x19, DAA, "DAA", "(6800) Decimal Adjust Accumulator A"],
+        [0x1A, TXINS, "NLDXX", "(TekExtended) N Load IX <= M(indexed)?" ],
+        [0x1B, ABA, "ABA", "(6800) A <= A + B"],
+        [0x1C, TXINS, "NLDAX", "(TekExtended) N Load IX <= A?"],
+        [0x1D, TXINS, "NLDBX", "(TekExtended) N Load IX <= B?"],
+        [0x1E, TXINS, "NSTAX", "(TekExtended) N Store A <= IX?"],
+        [0x1F, TXINS, "JMPAX", "(TekExtended) Jump A IX?"],
+
+        [0x20, BRA, "BRA", "(6800) Branch Always"],
+        [0x21, TXINS, "SDB", "(TekExtended) Store or subtract B <= D? Direct?"],
+        [0x22, BHI, "BHI", "(6800) Branch if Higher (unsigned)"],
+        [0x23, BLS, "BLS", "(6800) Branch if Lower or Same (unsigned)"],
+        [0x24, BCC, "BCC", "(6800) Branch if Carry Clear (CF = 0)"],
+        [0x25, BCS, "BCS", "(6800) Branch if Carry Set (CF = 1)"],
+        [0x26, BNE, "BNE", "(6800) Branch if Not Equal (ZF = 0)"],
+        [0x27, BEQ, "BEQ", "(6800) Branch if Equal (ZF = 1)"],
+        [0x28, BVC, "BVC", "(6800) Branch if Overflow Clear (VF = 0)"],
+        [0x29, BVS, "BVS", "(6800) Branch if Overflow Set (VF = 1)"],
+        [0x2A, BPL, "BPL", "(6800) Branch if Plus/Positive (N = 0)"],
+        [0x2B, BMI, "BMI", "(6800) Branch if Minus/Negative (N = 1)"],
+        [0x2C, BGE, "BGE", "(6800) Branch if Greater or Equal (signed)"],
+        [0x2D, BLT, "BLT", "(6800) Branch if Less Than (signed)"],
+        [0x2E, BGT, "BGT", "(6800) Branch if Greater Than (signed)"],
+        [0x2F, BLE, "BLE", "(6800) Branch if Less or Equal (signed)"],
+
+        [0x30, TSX, "TSX", "(6800) Transfer IX <= SP + 1"],
+        [0x31, INS, "INS", "(6800) Increment SP"],
+        [0x32, PUL_A, "PUL A", "(6800) Pull/Pop Stack to A"],
+        [0x33, PUL_B, "PUL B", "(6800) Pull/Pop Stack to B"],
+        [0x34, DES, "DES", "(6800) Decrement SP"],
+        [0x35, TXS, "TXS", "(6800) Transfer SP <= IX - 1"],
+        [0x36, PSH_A, "PSH A", "(6800) Push A to Stack"],
+        [0x37, PSH_B, "PSH B", "(6800) Push B to Stack"],
+        [0x38, TXINS, "JMPIN", "(TekExtended) Jump IN? Extended"],
+        [0x39, RTS, "RTS", "(6800) Return from Subroutine - Pop Stack to PC"],
+        [0x3A, TXINS, "FPSHD", "(TekExtended) Function Push M(direct)"],
+        [0x3B, RTI, "RTI", "(6800) Return from Interrupt - Pop Stack and restore Registers"],
+        [0x3C, TXINS, "FPSHX", "(TekExtended) Function Push M(indexed)"],
+        [0x3D, TXINS, "FPSH", "(TekExtended) Function Push M(extended)"],
+        [0x3E, WAI, "WAI", "(6800) Wait For Interrupt - Push Registers to Stack and jump to Reset vector"],
+        [0x3F, SWI, "SWI", "(6800) Software Interrupt - Push Registers to Stack and jump to SWI vector"],
+
+        [0x40, NEG_A, "NEG A", "(6800) Negate A"],
+        [0x41, TXINS, "FPSHI", "(TekExtended) Function Push Immediate"],
+        [0x42, TXINS, "FPULD", "(TekExtended) Function Pull/Pop from M(direct)?"],
+        [0x43, COM_A, "COM A", "(6800) Ones Complement A"],
+        [0x44, LSR_A, "LSR A", "(6800) Logical Shift Right A"],
+        [0x45, TXINS, "FPULX", "(TekExtended) Function Pull/Pop from M(indexed)?"],
+        [0x46, ROR_A, "ROR A", "(6800) Rotate Right A"],
+        [0x47, ASR_A, "ASR A", "(6800) Arithmetic Shift Right A"],
+        [0x48, ASL_A, "ASL A", "(6800) Arithmetic Shift Left A"],
+        [0x49, ROL_A, "ROL A", "(6800) Rotate Left A"],
+        [0x4A, DEC_A, "DEC A", "(6800) Decrement A"],
+        [0x4B, TXINS, "FPUL", "(TekExtended) Function Pull/Pop from M(extended)"],
+        [0x4C, INC_A, "INC A", "(6800) Increment A"],
+        [0x4D, TST_A, "TST A", "(6800) Test A"],
+        [0x4E, TXINS, "FDUP", "(TekExtended) Function DUP? Duplicate?"],
+        [0x4F, CLR_A, "CLR A", "(6800) Clear A"],
+
+        [0x50, NEG_B, "NEG B", "(6800) Negate B"],
+        [0x51, TXINS, "FSWP", "(TekExtended) Function SWP?"],
+        [0x52, TXINS, "FADD", "(TekExtended) Function Add"],
+        [0x53, COM_B, "COM B", "(6800) Ones Complement B"],
+        [0x54, LSR_B, "LSR B", "(6800) Logical Shift Right B"],
+        [0x55, TXINS, "FSUB", "(TekExtended) Function Subtract"],
+        [0x56, ROR_B, "ROR B", "(6800) Rotate Right B"],
+        [0x57, ASR_B, "ASR B", "(6800) Arithmetic Shift Right B"],
+        [0x58, ASL_B, "ASL B", "(6800) Arithmetic Shift Left B"],
+        [0x59, ROL_B, "ROL B", "(6800) Rotate Left B"],
+        [0x5A, DEC_B, "DEC B", "(6800) Decrement B"],
+        [0x5B, TXINS, "FMUL", "(TekExtended) Function Multiply"],
+        [0x5C, INC_B, "INC B", "(6800) Increment B"],
+        [0x5D, TST_B, "TST B", "(6800) Test B"],
+        [0x5E, TXINS, "FDIV", "(TekExtended) Function Divide"],
+        [0x5F, CLR_B, "CLR B", "(6800) Clear B"],
+
+        [0x60, NEG_IX, "NEG IX", "(6800) Negate M(indexed)"],
+        [0x61, TXINS, "FNORM", "(TekExtended) Function Normalize"],
+        [0x62, TXINS, "PSHRET", "(TekExtended) Push return address in M(direct) to stack?"],
+        [0x63, COM_IX, "COM IX", "(6800) Ones complement M(indexed)"],
+        [0x64, LSR_IX, "LSR IX", "(6800) Logical Shift Right M(indexed)"],
+        [0x65, TXINS, "RTRN", "(TekExtended) Return to address in M(direct)? Direct"],
+        [0x66, ROR_IX, "ROR IX", "(6800) Rotate Right M(indexed)"],
+        [0x67, ASR_IX, "ASR IX", "(6800) Arithmetic Shift Right M(indexed)"],
+        [0x68, ASL_IX, "ASL IX", "(6800) Arithmetic Shift Left M(indexed)"],
+        [0x69, ROL_IX, "ROL IX", "(6800) Rotate Left M(indexed)"],
+        [0x6A, DEC_IX, "DEC IX", "(6800) Decrement M(indexed)"],
+        [0x6B, TXINS, "PSH IX", "(TekExtended) Push IX to Stack"],
+        [0x6C, INC_IX, "INC IX", "(6800) Increment M(indexed)"],
+        [0x6D, TST_IX, "TST IX", "(6800) Test M(indexed)" ],
+        [0x6E, JMP_IX, "JMP IX", "(6800) Jump to indexed address"],
+        [0x6F, CLR_IX, "CLR IX", "(6800) Clear M(indexed)"],
+
+        [0x70, NEG_EX, "NEG EX", "(6800) Negate M(extended)"],
+        [0x71, TXINS, "STROKE", "(TekExtended) ???"],
+        [0x72, TXINS, "EC", "(TekExtended) ??? Error Check?"],
+        [0x73, COM_EX, "COM EX", "(6800) Ones complement M(extended)"],
+        [0x74, LSR_EX, "LSR EX", "(6800) Logical Shift Right M(extended)"],
+        [0x75, TXINS, "PUL X", "(TekExtended) Pull/Pop IX from Stack"],
+        [0x76, ROR_EX, "ROR EX", "(6800) Rotate Right M(extended)"],
+        [0x77, ASR_EX, "ASR EX", "(6800) Arithmetic Shift Right M(extended)"],
+        [0x78, ASL_EX, "ASL EX", "(6800) Arithmetic Shift Left M(extended)"],
+        [0x79, ROL_EX, "ROL EX", "(6800) Rotate Left M(extended)"],
+        [0x7A, DEC_EX, "DEC EX", "(6800) Decrement M(extended)"],
+        [0x7B, NOINS, "INV", "Invalid"],
+        [0x7C, INC_EX, "INC EX", "(6800) Increment M(extended)"],
+        [0x7D, TST_EX, "TST EX", "(6800) Test M(extended)"],
+        [0x7E, JMP_EX, "JMP EX", "(6800) Jump to extended address"],
+        [0x7F, CLR_EX, "CLR EX", "(6800) Clear M(extended)"],
+
+        [0x80, SUB_A_IM, "SUB A IM", "(6800) A <= A - immediate (8-bit)"],
+        [0x81, CMP_A_IM, "CMP A IM", "(6800) Compare A - immediate (8-bit)"],
+        [0x82, SBC_A_IM, "SBC A", "(6800) A <= A - immediate (8-bit) with carry"],
+        [0x83, NOINS, "INV", "Invalid"],
+        [0x84, AND_A_IM, "AND A IM", "(6800) A <= A and immediate (8-bit)"],
+        [0x85, BIT_A_IM, "BIT A IM", "(6800) Bit test A and immediate (8-bit)"],
+        [0x86, LDA_A_IM, "LDA A IM", "(6800) Load A <= immediate (8-bit)"],
+        [0x87, NOINS, "INV", "Invalid"],
+        [0x88, EOR_A_IM, "EOR A IM", "(6800) A <= A xor immediate (8-bit)"],
+        [0x89, ADC_A_IM, "ADC A IM", "(6800) A <= A + immediate (8-bit) with carry"],
+        [0x8A, ORA_A_IM, "ORA A IM", "(6800) A <= A or immediate (8-bit)"],
+        [0x8B, ADD_A_IM, "ADD A IM", "(6800) A <= A + immediate (8-bit)"],
+        [0x8C, CPX_IM, "CPX IM", "(6800) Compare IX - immediate (16-bit)"],
+        [0x8D, BSR, "BSR", "(6800) Branch to Subroutine"],
+        [0x8E, LDS_IM, "LDS IM", "(6800) Load Stack Pointer with extended address"],
+        [0x8F, NOINS, "INV", "Invalid"],
+
+        [0x90, SUB_A_DR, "SUB A DR", "(6800) A <= A - M(direct)"],
+        [0x91, CMP_A_DR, "CMP A DR", "(6800) Compare A - M(direct)"],
+        [0x92, SBC_A_DR, "SBC A DR", "(6800) A <= A - M(direct) with carry"],
+        [0x93, NOINS, "INV", "Invalid"],
+        [0x94, AND_A_DR, "AND A DR", "(6800) A <= A and M(direct)"],
+        [0x95, BIT_A_DR, "BIT A DR", "(6800) Bit test A and M(direct)"],
+        [0x96, LDA_A_DR, "LDA A DR", "(6800) Load A <= M(direct)"],
+        [0x97, STA_A_DR, "STA A DR", "(6800) Store M(direct) <= A"],
+        [0x98, EOR_A_DR, "EOR A DR", "(6800) A <= A xor M(direct)"],
+        [0x99, ADC_A_DR, "ADC A DR", "(6800) A <= A + M(direct) with carry"],
+        [0x9A, ORA_A_DR, "ORA A DR", "(6800) A <= A or M(direct)"],
+        [0x9B, ADD_A_DR, "ADD A DR", "(6800) A <= A or M(direct)"],
+        [0x9C, CPX_DR, "CPX DR", "(6800) Compare IX - M(direct)"],
+        [0x9D, NOINS, "INV", "Invalid"],
+        [0x9E, LDS_DR, "LDS DR", "(6800) Load SP <= M(direct)"],
+        [0x9F, STS_DR, "STS DR", "(6800) Store M(direct) <= SP"],
+
+        [0xA0, SUB_A_IX, "SUB A IX", "(6800) A <= A - M(indexed)"],
+        [0xA1, CMP_A_IX, "CMP A IX", "(6800) Compare A - M(indexed)"],
+        [0xA2, SBC_A_IX, "SBC A IX", "(6800) A <= A - M(indexed) with carry"],
+        [0xA3, NOINS, "INV", "Invalid"],
+        [0xA4, AND_A_IX, "AND A IX", "(6800) A <= A and M(indexed)"],
+        [0xA5, BIT_A_IX, "BIT A IX", "(6800) Bit test A and M(indexed)"],
+        [0xA6, LDA_A_IX, "LDA A IX", "(6800) Load A <= M(indexed)"],
+        [0xA7, STA_A_IX, "STA A IX", "(6800) Store M(indexed) <= A"],
+        [0xA8, EOR_A_IX, "EOR A IX", "(6800) A <= A xor M(indexed)"],
+        [0xA9, ADC_A_IX, "ADC A IX", "(6800) A <= A + M(indexed) with carry"],
+        [0xAA, ORA_A_IX, "ORA A IX", "(6800) A <= A or M(indexed)"],
+        [0xAB, ADD_A_IX, "ADD A IX", "(6800) A <= A + M(indexed)"],
+        [0xAC, CPX_IX, "CPX IX", "(6800) Compare IX - M(indexed)"],
+        [0xAD, JSR_IX, "JSR IX", "(6800) Jump to indexed address"],
+        [0xAE, LDS_IX, "LDS IX", "(6800) Load SP <= M(indexed)"],
+        [0xAF, STS_IX, "STS IX", "(6800) Store M(indexed) <= SP"],
+
+        [0xB0, SUB_A_EX, "SUB A EX", "(6800) A <= A - M(extended)"],
+        [0xB1, CMP_A_EX, "CMP A EX", "(6800) Compare A - M(extended)"],
+        [0xB2, SBC_A_EX, "SBC A EX", "(6800) A <= A - M(extended) with carry"],
+        [0xB3, NOINS, "INV", "Invalid"],
+        [0xB4, AND_A_EX, "AND A EX", "(6800) A <= A and M(extended)"],
+        [0xB5, BIT_A_EX, "BIT A EX", "(6800) Bit test A and M(extended)"],
+        [0xB6, LDA_A_EX, "LDA A EX", "(6800) Load A <= M(extended)"],
+        [0xB7, STA_A_EX, "STA A EX", "(6800) Store M(extended) <= A"],
+        [0xB8, EOR_A_EX, "EOR A EX", "(6800) A <= A xor M(extended)"],
+        [0xB9, ADC_A_EX, "ADC A EX", "(6800) A <= A + M(extended) with carry"],
+        [0xBA, ORA_A_EX, "ORA A EX", "(6800) A <= A or M(extended)"],
+        [0xBB, ADD_A_EX, "ADD A EX", "(6800) A <= A + M(extended)"],
+        [0xBC, CPX_EX, "CPX EX", "(6800) Compare IX - M(extended)"],
+        [0xBD, JSR_EX, "JSR EX", "(6800) Jump to extended address"],
+        [0xBE, LDS_EX, "LDS EX", "(6800) Load SP <= M(extended)"],
+        [0xBF, STS_EX, "STS EX", "(6800) Store M(extended) <= SP"],
+
+        [0xC0, SUB_B_IM, "SUB B IM", "(6800) B <= B - immediate (8-bit)"],
+        [0xC1, CMP_B_IM, "CMP B IM", "(6800) Compare B - immediate (8-bit)"],
+        [0xC2, SBC_B_IM, "SBC B IM", "(6800) B <= B - immediate (8-bit) with carry"],
+        [0xC3, NOINS, "INV", "Invalid"],
+        [0xC4, AND_B_IM, "AND B IM", "(6800) B <= B and immediate (8-bit)"],
+        [0xC5, BIT_B_IM, "BIT B IM", "(6800) Bit test B and immediate (8-bit)"],
+        [0xC6, LDA_B_IM, "LDA B IM", "(6800) Load B <= immediate (8-bit)"],
+        [0xC7, NOINS, "INV", "Invalid"],
+        [0xC8, EOR_B_IM, "EOR B IM", "(6800) B <= B xor immediate (8-bit)"],
+        [0xC9, ADC_B_IM, "ADC B IM", "(6800) B <= B + immediate (8-bit)"],
+        [0xCA, ORA_B_IM, "ORA B IM", "(6800) B <= B or immediate (8-bit)"],
+        [0xCB, ADD_B_IM, "ADD B IM", "(6800) B <= B + immediate (8-bit)"],
+        [0xCC, TXINS, "ADAX", "(TekExtended) Add A to IX?"],
+        [0xCD, TXINS, "WADAX", "(TekExtended) Wide Add A to IX?"],
+        [0xCE, LDX_IM, "LDX IM", "(6800) Load IX <= immediate (16-bit)"],
+        [0xCF, NOINS, "INV", "Invalid"],
+
+        [0xD0, SUB_B_DR, "SUB B DR", "(6800) B <= B - M(direct)"],
+        [0xD1, CMP_B_DR, "CMP B DR", "(6800) Compare B - M(direct)"],
+        [0xD2, SBC_B_DR, "SBC B DR", "(6800) B <= B - M(direct) with carry"],
+        [0xD3, NOINS, "INV", "Invalid"],
+        [0xD4, AND_B_DR, "AND B DR", "(6800) B <= B and M(direct)"],
+        [0xD5, BIT_B_DR, "BIT B DR", "(6800) Bit test B and M(direct)"],
+        [0xD6, LDA_B_DR, "LDA B DR", "(6800) Load B <= M(direct)"],
+        [0xD7, STA_B_DR, "STA B DR", "(6800) Store M(direct) <= B"],
+        [0xD8, EOR_B_DR, "EOR B DR", "(6800) B <= B xor M(direct)"],
+        [0xD9, ADC_B_DR, "ADC B DR", "(6800) B <= B + M(direct) with carry"],
+        [0xDA, ORA_B_DR, "ORA B DR", "(6800) B <= B or M(direct)"],
+        [0xDB, ADD_B_DR, "ADD B DR", "(6800) B <= B + M(direct)"],
+        [0xDC, TXINS, "SBUG", "(TekExtended) Software Bug?"],
+        [0xDD, TXINS, "CBUG", "(TekExtended) C Bug?"],
+        [0xDE, LDX_DR, "LDX DR", "(6800) Load IX <= M(direct)"],
+        [0xDF, STX_DR, "STX DR", "(6800) Store M(direct) <= IX"],
+
+        [0xE0, SUB_B_IX, "SUB B IX", "(6800) B <= B - M(indexed)"],
+        [0xE1, CMP_B_IX, "CMP B IX", "(6800) Compare B - M(indexed)"],
+        [0xE2, SBC_B_IX, "SBC B X", "(6800) B <= B - M(indexed) with carry"],
+        [0xE3, TXINS, "MVLR", "(TekExtended) ???"],
+        [0xE4, AND_B_IX, "AND B IX", "(6800) B <= B and M(indexed)"],
+        [0xE5, BIT_B_IX, "BIT B IX", "(6800) Bit test B and M(indexed)"],
+        [0xE6, LDA_B_IX, "LDA B IX", "(6800) Load B <= M(indexed)"],
+        [0xE7, STA_B_IX, "STA B IX", "(6800) Store M(indexed) <= B"],
+        [0xE8, EOR_B_IX, "EOR B IX", "(6800) B <= B xor M(indexed)"],
+        [0xE9, ADC_B_IX, "ADC B IX", "(6800) B <= B + M(indexed) with carry"],
+        [0xEA, ORA_B_IX, "ORA B IX", "(6800) B <= B or M(indexed)"],
+        [0xEB, ADD_B_IX, "ADD B IX", "(6800) B <= B + M(indexed)"],
+        [0xEC, TXINS, "MVRL", "(TekExtended) ???"],
+        [0xED, TXINS, "WADX", "(TekExtended) ??? Extended"],
+        [0xEE, LDX_IX, "LDX IX", "(6800) Load IX <= M(indexed)"],
+        [0xEF, STX_IX, "STX IX", "(6800) Store M(indexed) <= IX"],
+
+        [0xF0, SUB_B_EX, "SUB B EX", "(6800) B <= B - M(extended)"],
+        [0xF1, CMP_B_EX, "CMP B EX", "(6800) Compare B - M(extended)"],
+        [0xF2, SBC_B_EX, "SBC B EX", "(6800) B <= B - M(extended) with carry"],
+        [0xF3, TXINS, "CPCH", "(TekExtended) ??? Immediate"],
+        [0xF4, AND_B_EX, "AND B EX", "(6800) B <= B and M(extended)"],
+        [0xF5, BIT_B_EX, "BIT B EX", "(6800) Bit test B and M(extended)"],
+        [0xF6, LDA_B_EX, "LDA B EX", "(6800) Load B <= M(extended)"],
+        [0xF7, STA_B_EX, "STA B EX", "(6800) Store M(extended) <= B"],
+        [0xF8, EOR_B_EX, "EOR B EX", "(6800) B <= B xor M(extended)"],
+        [0xF9, ADC_B_EX, "ADC B EX", "(6800) B <= B + M(extended)"],
+        [0xFA, ORA_B_EX, "ORA B EX", "(6800) B <= B or M(extended)"],
+        [0xFB, ADD_B_EX, "ADD B EX", "(6800) B <= B + M(extended)"],
+        [0xFC, NOINS, "INV", "Invalid"],
+        [0xFD, TXINS, "PCH", "(TekExtended) ??? Immediate"],
+        [0xFE, LDX_EX, "LDX EX", "(6800) Load IX <= M(extended)"],
+        [0xFF, STX_EX, "STX EX", "(6800) Store M(extended) <= IX"]
+    ];
+
+//    function quack() { console.log("quack said the duck") } myfunctions = [1,2,3,"abc"]; myfunctions.push(quack); myfunctions[4]()
+//    quack said the duck
+    
+
+    function NOP(){         // 0x00
+        // No operation
+    }
+
+    function TAP(){         // 0x06
+        CCR = A & this.CCR_MASK;
+    }
+
+    function TPA(){         // 0x07
+        A = CCR | CCR_ALWAYS_ON;
+    }
+
+    function INX(){         // 0x08
+        IX = (IX + 1) & ADDR_MASK;
+        COND_SET_FLAG_Z( IX );
+    }    
+
+    function DEX(){         // 0x09
+        IX = (IX - 1) & ADDR_MASK;
+        COND_SET_FLAG_Z( IX );
+    }
+
+    function CLV(){         // 0x0A
+        CLR_FLAG( VF );
+    }
+
+    function SEV(){         // 0x0B
+        SET_FLAG( VF );
+    }
+
+    function CLC(){         // 0x0C
+        CLR_FLAG( CF );
+    }
+
+    function SEC(){         // 0x0D
+        SET_FLAG( CF );
+    }
+
+    function CLI(){         // 0x0E
+        CLR_FLAG( IF );
+    }
+
+    function SEI(){         // 0x0F
+        SET_FLAG( IF );
+    }
+
+    function SBA(){         // 0x10
+        let op1 = B;
+        let res = A - op1;
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        A = res & 0xFF;
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_N( A );
+    }
+
+    function CBA(){         // 0x11
+        let op1 = B;
+        let res = A - op1;
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        COND_SET_FLAG_Z( res & 0xFF );
+        COND_SET_FLAG_N( res & 0xFF );
+    }
+
+    function TAB(){         // 0x16
+        B = A;
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+        CLR_FLAG( VF );
+    }
+
+    function TBA(){         // 0x17
+        A = B;
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+        CLR_FLAG( VF );
+    }
+
+    function DAA(){         // 0x19
+        // Note: TekExtended version does NOT implement this instruction
+        let DAR = A & 0x0F;
+        let op1 = GET_FLAG( CF );
+        if( (DAR > 9) || GET_FLAG( CF ) ) {
+            DAR += 6;
+            A &= 0xF0;
+            A |= (DAR & 0x0F);
+            COND_SET_FLAG( DAR & 0x10, CF );
+        }
+        DAR = (A >>> 4) & 0x0F;
+        if( (DAR > 9) || GET_FLAG( CF ) ) {
+            DAR += 6;
+            if( GET_FLAG( CF ) ) 
+                DAR++;
+            A &= 0x0F;
+            A |= (DAR << 4);
+        }
+        COND_SET_FLAG( op1, CF );
+        if( (DAR << 4) & 0x100 )
+            SET_FLAG( CF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+        A &= 0xFF;
+    }
+
+    function ABA(){         // 0x1B
+        let op1 = B;
+        let res = A + op1;
+        COND_SET_FLAG_H( (A ^ op1 ^ res) & 0x10 );
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        A = res & 0xFF;
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_N( A );
+    }
+
+    function BRA(){         // 0x20
+        branch_relative( 1 );
+    }
+
+    function BHI(){         // 0x22
+        branch_relative( !(GET_FLAG(CF) | GET_FLAG(ZF)) );
+    }
+
+    function BLS(){         // 0x23
+        branch_relative( GET_FLAG(CF) | GET_FLAG(ZF) );
+    }
+
+    function BCC(){         // 0x24
+        branch_relative( !GET_FLAG(CF) );
+    }
+
+    function BCS(){         // 0x25
+        branch_relative( GET_FLAG(CF) );
+    }
+
+    function BNE(){         // 0x26
+        branch_relative( !GET_FLAG(ZF) );
+    }
+
+    function BEQ(){         // 0x27
+        branch_relative( GET_FLAG(ZF) );
+    }
+
+    function BVC(){         // 0x28
+        branch_relative( !GET_FLAG(VF) );
+    }
+
+    function BVS(){         // 0x29
+        branch_relative( GET_FLAG(VF) );
+    }
+
+    function BPL(){         // 0x2A
+        branch_relative( !GET_FLAG(NF) );
+    }
+
+    function BMI(){         // 0x2B
+        branch_relative( GET_FLAG(NF) );
+    }
+
+    function BGE(){         // 0x2C
+        branch_relative( !(GET_FLAG(NF) ^ GET_FLAG(VF)) );
+    }
+
+    function BLT(){         // 0x2D
+        branch_relative( GET_FLAG(NF) ^ GET_FLAG(VF) );
+    }
+
+    function BGT(){         // 0x2E
+        branch_relative( !(GET_FLAG(ZF) | (GET_FLAG(NF) ^ GET_FLAG(VF))) );
+    }
+
+    function BLE(){         // 0x2F
+        branch_relative( GET_FLAG(ZF) | (GET_FLAG(NF) ^ GET_FLAG(VF)) );
+    }
+
+    function TSX(){         // 0x30
+        IX = (SP + 1) & ADDR_MASK;
+    }
+
+    function INS(){         // 0x31
+        SP = (SP + 1) & ADDR_MASK;
+    }
+
+    function PUL_A(){       // 0x32
+        A = pop_byte();
+    }
+
+    function PUL_B(){       // 0x33
+        B = pop_byte();
+    }
+
+    function DES(){         // 0x34
+        SP = (SP - 1) & ADDR_MASK;
+    }
+
+    function TXS(){         // 0x35
+        SP = (IX - 1) & ADDR_MASK;
+    }
+
+    function PSH_A(){       // 0x36
+        push_byte( A );
+    }
+
+    function PSH_B(){      // 0x37
+        push_byte( B );
+    }
+
+    function RTS(){         // 0x39
+        PC = pop_word();
+    }
+
+    function RTI(){         // 0x3B
+        CCR = pop_byte();
+        B   = pop_byte();
+        A   = pop_byte();
+        IX  = pop_word();
+        PC  = pop_word();
+    }
+
+    function WAI(){         // 0x3E
+        push_word( PC  );
+        push_word( IX  );
+        push_byte( A   );
+        push_byte( B   );
+        push_byte( CCR );
+        if( GET_FLAG(IF) ) {
+            //@@@ reason = STOP_HALT;
+            //@@@ continue;
+        } else {
+            SET_FLAG( IF );
+            // Fetch the Reset vector for the PC to jump to the WAI routine
+            // This halts the processor until a non-maskable interrupt arrives
+            PC = readWord(RESET_VECTOR) & ADDR_MASK;
+        }
+    }
+
+    function SWI(){         // 0x3F
+        push_word( PC  );
+        push_word( IX  );
+        push_byte( A   );
+        push_byte( B   );
+        push_byte( CCR );
+        SET_FLAG(  IF  );
+        // Fetch the SWI interrupt vector for the PC to jump to the SWI routine
+        PC = readWord(SWI_VECTOR) & ADDR_MASK;
+    }
+
+    function NEG_A(){       // 0x40
+        A = (0 - A) & 0xFF;
+        COND_SET_FLAG_V( A == 0x80 );
+        COND_SET_FLAG(   A == 0x00, CF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function COM_A(){       // 0x43
+        A = (~A) & 0xFF;
+        CLR_FLAG( VF );
+        SET_FLAG( CF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function LSR_A(){       // 0x44
+        COND_SET_FLAG( A & 0x01, CF );
+        A = (A >>> 1) & 0xFF;
+        CLR_FLAG( NF );
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+    }
+
+    function ROR_A(){       // 0x46
+        let hi = GET_FLAG( CF );
+        COND_SET_FLAG( A & 0x01, CF );
+        A = (A >>> 1) & 0xFF;
+        if( hi )
+            A |= 0x80;
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+    }
+
+    function ASR_A(){       // 0x47
+        COND_SET_FLAG( A & 0x01, CF );
+        let lo = A & 0x80;
+        A = (A >>> 1) & 0xFF;
+        A |= lo; 
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+    }
+
+    function ASL_A(){       // 0x48
+        COND_SET_FLAG( A & 0x80, CF );
+        A = (A << 1) & 0xFF;
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+    }
+
+    function ROL_A(){       // 0x49
+        let hi = GET_FLAG( CF );
+        COND_SET_FLAG( A & 0x80, CF );
+        A = (A << 1) & 0xFF;
+        if( hi )
+            A |= 0x01;
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+    }
+
+    function DEC_A(){       // 0x4A
+        COND_SET_FLAG_V( A == 0x80 );
+        A = (A - 1) & 0xFF;
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function INC_A(){       // 0x4C
+        COND_SET_FLAG_V( A == 0x7F );
+        A = (A + 1) & 0xFF;
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function TST_A(){       // 0x4D
+        let lo = (A - 0) & 0xFF;
+        CLR_FLAG( VF );
+        CLR_FLAG( CF );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+    }
+
+    function CLR_A(){       // 0x4F
+        A = 0;
+        CLR_FLAG( NF );
+        CLR_FLAG( VF );
+        CLR_FLAG( CF );
+        SET_FLAG( ZF );
+    }
+
+    function NEG_B(){       // 0x50
+        B = (0 - B) & 0xFF;
+        COND_SET_FLAG_V( B == 0x80 );
+        COND_SET_FLAG(   B == 0x00, CF );
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function COM_B(){       // 0x53
+        B = (~B) & 0xFF;
+        CLR_FLAG( VF );
+        SET_FLAG( CF );
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function LSR_B(){       // 0x54
+        COND_SET_FLAG( B & 0x01, CF );
+        B = (B >>> 1) & 0xFF;
+        CLR_FLAG( NF );
+        COND_SET_FLAG_Z( B );
+        COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+    }
+
+    function ROR_B(){       // 0x56
+        let hi = GET_FLAG( CF );
+        COND_SET_FLAG( B & 0x01, CF );
+        B = (B >>> 1) & 0xFF;
+        if( hi )
+            B |= 0x80;
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+        COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+    }
+
+    function ASR_B(){       // 0x57
+        let lo = B & 0x80;
+        B = (B >>> 1) & 0xFF;
+        B |= lo; 
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+        COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF));
+    }
+
+    function ASL_B(){       // 0x58
+        COND_SET_FLAG( B & 0x80, CF );
+        B = (B << 1) & 0xFF;
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+        COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+    }
+
+    function ROL_B(){       // 0x59
+        let hi = GET_FLAG( CF );
+        COND_SET_FLAG( B & 0x80, CF );
+        B = (B << 1) & 0xFF;
+        if( hi )
+            B |= 0x01;
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+        COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+    }
+
+    function DEC_B(){       // 0x5A
+        COND_SET_FLAG_V( B == 0x80 );
+        B = (B - 1) & 0xFF;
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function INC_B(){       // 0x5C
+        COND_SET_FLAG_V( B == 0x7F );
+        B = (B + 1) & 0xFF;
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function TST_B(){       //0x5D
+        let lo = (B - 0) & 0xFF;
+        CLR_FLAG( VF );
+        CLR_FLAG( CF );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+    }
+
+    function CLR_B(){       // 0x5F
+        B = 0;
+        CLR_FLAG( NF );
+        CLR_FLAG( VF );
+        CLR_FLAG( CF );
+        SET_FLAG( ZF );
+    }
+
+    function NEG_IX(){       // 0x60
+        let DAR = get_indexed_addr();
+        let lo = (0 - readByte( DAR ) ) & 0xFF;
+        writeByte( DAR, lo );
+        COND_SET_FLAG_V( lo == 0x80 );
+        COND_SET_FLAG(   lo == 0x00, CF );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+    }
+
+    function COM_IX(){       // 0x63
+        let DAR = get_indexed_addr();
+        let lo = ~readByte( DAR );
+        lo &= 0xFF;
+        writeByte( DAR, lo );
+        CLR_FLAG( VF );
+        SET_FLAG( CF );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+    }
+
+    function LSR_IX(){       // 0x64
+        let DAR = get_indexed_addr();
+        let lo = readByte( DAR );
+        COND_SET_FLAG( lo & 0x01, CF );
+        lo >>>= 1;
+        writeByte( DAR, lo );
+        CLR_FLAG( NF );
+        COND_SET_FLAG_Z( lo );
+        COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+    }
+
+    function ROR_IX(){       // 0x66
+        let DAR = get_indexed_addr();
+        let lo = readByte( DAR );
+        let hi = GET_FLAG( CF );
+        COND_SET_FLAG( lo & 0x01, CF );
+        lo >>>= 1;
+        if( hi )
+            lo |= 0x80;
+        writeByte( DAR, lo );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+        COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+    }
+
+    function ASR_IX(){       // 0x67
+        let DAR = get_indexed_addr();
+        let lo = readByte( DAR );
+        COND_SET_FLAG( lo & 0x01, CF );
+        lo = (lo & 0x80) | (lo >>> 1);
+        writeByte( DAR, lo );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+        COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+    }
+
+    function ASL_IX(){       // 0x68
+        let DAR = get_indexed_addr();
+        let lo = readByte( DAR );
+        COND_SET_FLAG( lo & 0x80, CF );
+        lo <<= 1;
+        lo  &= 0xFF;
+        writeByte( DAR, lo );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+        COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+    }
+
+    function ROL_IX(){       // 0x69
+        let DAR = get_indexed_addr();
+        let lo = readByte( DAR );
+        let hi = GET_FLAG( CF );
+        COND_SET_FLAG( lo & 0x80, CF );
+        lo <<= 1;
+        lo  &= 0xFF;
+        if( hi )
+            lo |= 0x01;
+        writeByte( DAR, lo );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+        COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+    }
+
+    function DEC_IX(){       // 0x6A
+        let DAR = get_indexed_addr();
+        let lo = readByte( DAR );
+        COND_SET_FLAG_V( lo == 0x80 );
+        lo = (lo - 1) & 0xFF;
+        writeByte( DAR, lo );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+    }
+
+    function INC_IX(){       // 0x6C
+        let DAR= get_indexed_addr();
+        let lo = readByte( DAR );
+        COND_SET_FLAG_V( lo == 0x7F );
+        lo = (lo + 1) & 0xFF;
+        writeByte( DAR, lo );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+    }
+
+    function TST_IX(){       // 0x6D
+        let lo = (get_indexed_data() - 0) & 0xFF;
+        CLR_FLAG( VF );
+        CLR_FLAG( CF );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+    }
+
+    function JMP_IX(){       // 0x6E
+        PC = get_indexed_addr();
+    }
+
+    function CLR_IX(){       // 0x6F
+        writeByte( get_indexed_addr(), 0 );
+        CLR_FLAG( NF );
+        CLR_FLAG( VF );
+        CLR_FLAG( CF );
+        SET_FLAG( ZF );
+    }
+
+    function NEG_EX(){      // 0x70
+        let DAR = get_extended_addr();
+        let lo = (0 - readByte( DAR )) & 0xFF;
+        writeByte( DAR, lo );                
+        COND_SET_FLAG_V( lo == 0x80 );
+        COND_SET_FLAG(   lo == 0x00, CF );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+    }
+
+    function COM_EX(){      // 0x73
+        let DAR = get_extended_addr();
+        let lo = ~readByte( DAR );
+        lo &= 0xFF;
+        writeByte( DAR, lo );
+        CLR_FLAG( VF );
+        SET_FLAG( CF );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+    }
+
+    function LSR_EX(){      // 0x74
+        let DAR = get_extended_addr();
+        let lo = readByte( DAR );
+        COND_SET_FLAG( lo & 0x01, CF );
+        lo >>>= 1;
+        writeByte( DAR, lo );
+        CLR_FLAG( NF );
+        COND_SET_FLAG_Z( lo );
+        COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+    }
+
+    function ROR_EX(){      // 0x76
+        let DAR = get_extended_addr();
+        let hi = GET_FLAG( CF );
+        let lo = readByte( DAR );
+        COND_SET_FLAG( lo & 0x01, CF );
+        lo >>>= 1;
+        if( hi )
+            lo |= 0x80;
+        writeByte( DAR, lo );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+        COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+    }
+
+    function ASR_EX(){      // 0x77
+        let DAR = get_extended_addr();
+        let lo = readByte( DAR );
+        COND_SET_FLAG( lo & 0x01, CF );
+        let hi = lo & 0x80;
+        lo >>>= 1;
+        lo |= hi;
+        writeByte( DAR, lo );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+        COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+    }
+
+    function ASL_EX(){      // 0x78
+        let DAR = get_extended_addr();
+        let lo = readByte( DAR );
+        COND_SET_FLAG( lo & 0x80, CF );
+        lo <<= 1;
+        lo  &= 0xFF;
+        writeByte( DAR, lo );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+        COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+    }
+
+    function ROL_EX(){      // 0x79
+        let DAR = get_extended_addr();
+        let lo = readByte( DAR );
+        let hi = GET_FLAG( CF );
+        COND_SET_FLAG( lo & 0x80, CF );
+        lo <<= 1;
+        lo  &= 0xFF;
+        if( hi )
+            lo |= 0x01;
+        writeByte( DAR, lo );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+        COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+    }
+
+    function DEC_EX(){      // 0x7A
+        let DAR = get_extended_addr();
+        let lo = readByte( DAR );
+        COND_SET_FLAG_V( lo == 0x80 );
+        lo = (lo - 1) & 0xFF;
+        writeByte( DAR, lo );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+    }
+
+    function INC_EX(){      // 0x7C
+        let DAR = get_extended_addr();
+        let lo = readByte( DAR );
+        COND_SET_FLAG_V( lo == 0x7F );
+        lo = (lo + 1) & 0xFF;
+        writeByte( DAR, lo );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+    }
+
+    function TST_EX(){      // 0x7D
+        let lo = readByte( get_extended_addr() ) - 0;
+        CLR_FLAG( VF );
+        CLR_FLAG( CF );
+        COND_SET_FLAG_N( lo );
+        lo &= 0xFF;
+        COND_SET_FLAG_Z( lo );
+    }
+
+    function JMP_EX(){      // 0x7E
+        PC = get_extended_addr() & ADDR_MASK;
+    }
+
+    function CLR_EX(){      // 0x7F
+        writeByte( get_extended_addr(), 0 );
+        CLR_FLAG( NF );
+        CLR_FLAG( VF );
+        CLR_FLAG( CF );
+        SET_FLAG( ZF );
+    }
+
+    function SUB_A_IM(){    // 0x80
+        let op1 = fetch_byte();
+        let res = A - op1;
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        A = res & 0xFF;
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_N( A );
+    }
+
+    function CMP_A_IM(){    // 0x81
+        let op1 = fetch_byte();
+        let res = A - op1;
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        COND_SET_FLAG_Z( res & 0xFF );
+        COND_SET_FLAG_N( res & 0xFF );
+    }
+
+    function SBC_A_IM(){    // 0x82
+        let op1 = fetch_byte();
+        let res = A - op1 - GET_FLAG( CF );
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        A = res & 0xFF;
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_N( A );
+    }
+
+    function AND_A_IM(){    // 0x84
+        A = (A & fetch_byte()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function BIT_A_IM(){    // 0x85
+        let lo = (A & fetch_byte()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo ); 
+    }
+
+    function LDA_A_IM(){    // 0x86
+        A = fetch_byte();
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function EOR_A_IM(){    // 0x88
+        A = (A ^ fetch_byte()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function ADC_A_IM(){    // 0x89
+        let op1 = fetch_byte();
+        let res = A + op1 + GET_FLAG( CF );
+        COND_SET_FLAG_H( (A ^ op1 ^ res) & 0x10 );
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        A = res & 0xFF;
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_N( A );
+    }
+
+    function ORA_A_IM(){    // 0x8A
+        A = (A | fetch_byte()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function ADD_A_IM(){    // 0x0B
+        let op1 = fetch_byte();
+        let res = A + op1;
+        COND_SET_FLAG_H( (A ^ op1 ^ res) & 0x10 );
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        A = res & 0xFF;
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_N( A );
+    }
+
+    function CPX_IM(){      // 0x8C
+        let op1 = IX - fetch_word();
+        COND_SET_FLAG_Z( op1           );
+        COND_SET_FLAG_N( op1 >>> 8     );
+        COND_SET_FLAG_V( op1 & 0x10000 );
+    }
+
+    function BSR(){         // 0x8D
+        let lo = get_relative_addr();
+        push_word( PC );
+        PC = PC + lo;
+        PC &= ADDR_MASK;
+    }
+
+    function LDS_IM(){      // 0x8E
+        SP = get_extended_addr();
+        COND_SET_FLAG_N( SP >>> 8);
+        COND_SET_FLAG_Z( SP      );
+        CLR_FLAG( VF );
+    }
+
+    function SUB_A_DR(){    // 0x90
+        let op1 = get_direct_data();
+        let res = A - op1;
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        A = res & 0xFF;
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_N( A );
+    }
+
+    function CMP_A_DR(){    // 0x91
+        let op1 = get_direct_data();
+        let res = A - op1;
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        COND_SET_FLAG_Z( res & 0xFF );
+        COND_SET_FLAG_N( res & 0xFF );
+    }
+
+    function SBC_A_DR(){    // 0x92
+        let op1 = get_direct_data();
+        let res = A - op1 - GET_FLAG( CF );
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        A = res & 0xFF;
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_N( A );
+    }
+
+    function AND_A_DR(){    // 0x94
+        A = (A & get_direct_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function BIT_A_DR(){    // 0x95
+        let lo = (A & get_direct_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+    }
+
+    function LDA_A_DR(){    // 0x96
+        A = get_direct_data();
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function STA_A_DR(){    // 0x97
+        writeByte( get_direct_addr(), A );
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function EOR_A_DR(){    // 0x98
+        A = (A ^ get_direct_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function ADC_A_DR(){    // 0x99
+        let op1 = get_direct_data();
+        let res = A + op1 + GET_FLAG( CF );
+        COND_SET_FLAG_H( (A ^ op1 ^ res) & 0x10 );
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        A = res & 0xFF;
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_N( A );
+    }
+
+    function ORA_A_DR(){    // 0x9A
+        A = (A | get_direct_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function ADD_A_DR(){    // 0x9B
+        let op1 = get_direct_data();
+        let res = A + op1;
+        COND_SET_FLAG_H( (A ^ op1 ^ res) & 0x10 );
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        A = res & 0xFF;
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_N( A );
+    }
+
+    function CPX_DR(){      // 0x9C
+        let op1 = IX - readWord( get_direct_addr() );
+        COND_SET_FLAG_Z( op1           );
+        COND_SET_FLAG_N( op1 >>> 8     );
+        COND_SET_FLAG_V( op1 & 0x10000 );
+    }
+
+    function LDS_DR(){      // 0x9E
+        SP = readWord( get_direct_addr() );
+        COND_SET_FLAG_N( SP >>> 8 );
+        COND_SET_FLAG_Z( SP       );
+        CLR_FLAG( VF );
+    }
+
+    function STS_DR(){      // 0x9F
+        writeWord( get_direct_addr(), SP );
+        COND_SET_FLAG_N( SP >>> 8 );
+        COND_SET_FLAG_Z( SP       );
+        CLR_FLAG( VF );
+    }
+
+    function SUB_A_IX(){     // 0xA0
+        let op1 = get_indexed_data();
+        let res = A - op1;
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        A = res & 0xFF;
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_N( A );
+    }
+
+    function CMP_A_IX(){     // 0xA1
+        let op1 = get_indexed_data();
+        let res = A - op1;
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        COND_SET_FLAG_Z( res & 0xFF );
+        COND_SET_FLAG_N( res & 0xFF );
+    }
+
+    function SBC_A_IX(){     // 0xA2
+        let op1 = get_indexed_data();
+        let res = A - op1 - GET_FLAG( CF );
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        A = res & 0xFF;
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_N( A );
+    }
+
+    function AND_A_IX(){     // 0xA4
+        A = (A & get_indexed_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function BIT_A_IX(){     // 0xA5
+        let lo = (A & get_indexed_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+    }
+
+    function LDA_A_IX(){     // 0xA6
+        A = get_indexed_data();
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function STA_A_IX(){     // 0xA7
+        writeByte( get_indexed_addr(), A );
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function EOR_A_IX(){     // 0xA8
+        A = (A ^ get_indexed_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function ADC_A_IX(){     // 0xA9
+        let op1 = get_indexed_data();
+        let res = A + op1 + GET_FLAG( CF );
+        COND_SET_FLAG_H( (A ^ op1 ^ res) & 0x10 );
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        A = res & 0xFF;
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_N( A );
+    }
+
+    function ORA_A_IX(){     // 0xAA
+        A = (A | get_indexed_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function ADD_A_IX(){     // 0xAB
+        let op1 = get_indexed_data();
+        let res = A + op1;
+        COND_SET_FLAG_H( (A ^ op1 ^ res) & 0x10 );
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        A = res & 0xFF;
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_N( A );
+    }
+
+    function CPX_IX(){       // 0xAC
+        let op1 = (IX - get_indexed_addr()) & ADDR_MASK;
+        COND_SET_FLAG_Z( op1           );
+        COND_SET_FLAG_N( op1 >>> 8     );
+        COND_SET_FLAG_V( op1 & 0x10000 );
+    }
+
+    function JSR_IX(){       // 0xAD
+        let DAR = get_indexed_addr();
+        push_word( PC );
+        PC = DAR;
+    }
+
+    function LDS_IX(){       // 0xAE
+        SP = readWord( get_indexed_addr() );
+        COND_SET_FLAG_N( SP >>> 8 );
+        COND_SET_FLAG_Z( SP       );
+        CLR_FLAG( VF );
+    }
+
+    function STS_IX(){       // 0xAF
+        writeWord( get_indexed_addr(), SP );
+        COND_SET_FLAG_N( SP >>> 8 );
+        COND_SET_FLAG_Z( SP       );
+        CLR_FLAG( VF );
+    }
+
+    function SUB_A_EX(){    // 0xB0
+        let op1 = get_extended_data();
+        let res = A - op1;
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        A = res & 0xFF;
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_N( A );
+    }
+
+    function CMP_A_EX(){    // 0xB1
+        let op1 = get_extended_data();
+        let res = A - op1;
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        COND_SET_FLAG_Z( res & 0xFF );
+        COND_SET_FLAG_N( res & 0xFF );
+    }
+
+    function SBC_A_EX(){    // 0xB2
+        let op1 = get_extended_data();
+        let res = A - op1 - GET_FLAG( CF );
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        A = res & 0xFF;
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_N( A );
+    }
+
+    function AND_A_EX(){    // 0xB4
+        A = (A & get_extended_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function BIT_A_EX(){    // 0xB5
+        let lo = (A & get_extended_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+    }
+
+    function LDA_A_EX(){    // 0xB6
+        A = get_extended_data();
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function STA_A_EX(){    // 0xB7
+        writeByte( get_extended_addr(), A );
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function EOR_A_EX(){    // 0xB8
+        A = (A ^ get_extended_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function ADC_A_EX(){    // 0xB9
+        let op1 = get_extended_data();
+        let res = A + op1 + GET_FLAG( CF );
+        COND_SET_FLAG_H( (A ^ op1 ^ res) & 0x10 );
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        A = res & 0xFF;
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_N( A );
+    }
+
+    function ORA_A_EX(){    // 0xBA
+        A = (A | get_extended_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( A );
+        COND_SET_FLAG_Z( A );
+    }
+
+    function ADD_A_EX(){    // 0xBB
+        let op1 = get_extended_data();
+        let res = A + op1;
+        COND_SET_FLAG_H( (A ^ op1 ^ res) & 0x10 );
+        COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        A = res & 0xFF;
+        COND_SET_FLAG_Z( A );
+        COND_SET_FLAG_N( A );
+    }
+
+    function CPX_EX(){      // 0xBC
+        let op1 = (IX - readWord( get_extended_addr() ) ); // & ADDR_MASK;
+        COND_SET_FLAG_Z( op1           );
+        COND_SET_FLAG_N( op1 >>> 8     );
+        COND_SET_FLAG_V( op1 & 0x10000 );
+    }
+
+    function JSR_EX(){         // 0xBD
+        let DAR = get_extended_addr();
+        push_word( PC );
+        PC = DAR;
+    }
+
+    function LDS_EX(){      // 0xBE
+        SP = readWord( get_extended_addr() );
+        COND_SET_FLAG_N( SP >>> 8 );
+        COND_SET_FLAG_Z( SP       );
+        CLR_FLAG( VF );
+    }
+
+    function STS_EX(){      // 0xBF
+        writeWord( get_extended_addr(), SP );
+        COND_SET_FLAG_N( SP >>> 8 );
+        COND_SET_FLAG_Z( SP       );
+        CLR_FLAG( VF );
+    }
+
+    function SUB_B_IM(){    // 0xC0
+        let op1 = fetch_byte();
+        let res = B - op1;
+        COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        B = res & 0xFF;
+        COND_SET_FLAG_Z( B );
+        COND_SET_FLAG_N( B );
+    }
+
+    function CMP_B_IM(){    // 0xC1
+        let op1 = fetch_byte();
+        let res = B - op1;
+        COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        COND_SET_FLAG_Z( res & 0xFF );
+        COND_SET_FLAG_N( res & 0xFF );
+    }
+
+    function SBC_B_IM(){    // 0xC2
+        let op1 = fetch_byte();
+        let res = B - op1 - GET_FLAG( CF );
+        COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        B = res & 0xFF;
+        COND_SET_FLAG_Z( B );
+        COND_SET_FLAG_N( B );
+    }
+
+    function AND_B_IM(){    // 0xC4
+        B = (B & fetch_byte()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function BIT_B_IM(){    // 0xC5
+        let lo = (B & fetch_byte()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+    }
+
+    function LDA_B_IM(){    // 0xC6
+        B = fetch_byte();
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function EOR_B_IM(){    // 0xC8
+        B = (B ^ fetch_byte()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function ADC_B_IM(){    // 0xC9
+        let op1 = fetch_byte();
+        let res = B + op1 + GET_FLAG( CF );
+        COND_SET_FLAG_H( (B ^ op1 ^ res) & 0x10 );
+        COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        B = res & 0xFF;
+        COND_SET_FLAG_Z( B );
+        COND_SET_FLAG_N( B );
+    }
+
+    function ORA_B_IM(){    // 0xCA
+        B = (B | fetch_byte()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function ADD_B_IM(){    // 0xCB
+        let op1 = fetch_byte();
+        let res = B + op1;
+        COND_SET_FLAG_H( (B ^ op1 ^ res) & 0x10 );
+        COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        B = res & 0xFF;
+        COND_SET_FLAG_Z( B );
+        COND_SET_FLAG_N( B );
+    }
+
+    function LDX_IM(){      // 0xCE
+        IX = fetch_word();
+        COND_SET_FLAG_N( IX >>> 8 );
+        COND_SET_FLAG_Z( IX       );
+        CLR_FLAG( VF );
+    }
+
+    function SUB_B_DR(){    // 0xD0
+        let op1 = get_direct_data();
+        let res = B - op1;
+        COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        B = res & 0xFF;
+        COND_SET_FLAG_Z( B );
+        COND_SET_FLAG_N( B );
+    }
+
+    function CMP_B_DR(){    // 0xD1
+        let op1 = get_direct_data();
+        let res = B - op1;
+        COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        COND_SET_FLAG_Z( res & 0xFF );
+        COND_SET_FLAG_N( res & 0xFF );
+    }
+
+    function SBC_B_DR(){    // 0xD2
+        let op1 = get_direct_data();
+        let res = B - op1 - GET_FLAG( CF );
+        COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        B = res & 0xFF;
+        COND_SET_FLAG_Z( B );
+        COND_SET_FLAG_N( B );
+    }
+
+    function AND_B_DR(){    // 0xD4
+        B = (B & get_direct_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function BIT_B_DR(){    // 0xD5
+        let lo = (B & get_direct_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+    }
+
+    function LDA_B_DR(){    // 0xD6
+        B = get_direct_data();
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function STA_B_DR(){    // 0xD7
+        writeByte( get_direct_addr(), B );
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function EOR_B_DR(){    // 0xD8
+        B = (B ^ get_direct_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function ADC_B_DR(){    // 0xD9
+        let op1 = get_direct_data();
+        let res = B + op1 + GET_FLAG( CF );
+        COND_SET_FLAG_H( (B ^ op1 ^ res) & 0x10 );
+        COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        B = res & 0xFF;
+        COND_SET_FLAG_Z( B );
+        COND_SET_FLAG_N( B );
+    }
+
+    function ORA_B_DR(){    // 0xDA
+        B = (B | get_direct_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function ADD_B_DR(){    // 0xDB
+        let op1 = get_direct_data();
+        let res = B + op1;
+        COND_SET_FLAG_H( (B ^ op1 ^ res) & 0x10 );
+        COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        B = res & 0xFF;
+        COND_SET_FLAG_Z( B );
+        COND_SET_FLAG_N( B );
+    }
+
+    function LDX_DR(){      // 0xDE
+        IX = readWord( get_direct_addr() );
+        COND_SET_FLAG_N( IX >>> 8 );
+        COND_SET_FLAG_Z( IX       );
+        CLR_FLAG( VF );
+    }
+
+    function STX_DR(){      // 0xDF
+        writeWord( get_direct_addr(), IX );
+        COND_SET_FLAG_N( IX >>> 8 );
+        COND_SET_FLAG_Z( IX       );
+        CLR_FLAG( VF );
+    }
+
+    function SUB_B_IX(){    // 0xE0
+        let op1 = get_indexed_data();
+        let res = B - op1;
+        COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        B = res & 0xFF;
+        COND_SET_FLAG_Z( B );
+        COND_SET_FLAG_N( B );
+    }
+
+    function CMP_B_IX(){    // 0xE1
+        let op1 = get_indexed_data();
+        let res = B - op1;
+        COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        COND_SET_FLAG_Z( res & 0xFF );
+        COND_SET_FLAG_N( res & 0xFF );
+    }
+
+    function SBC_B_IX(){    // 0xE2
+        let op1 = get_indexed_data();
+        let res = B - op1 - GET_FLAG( CF );
+        COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        B = res & 0xFF;
+        COND_SET_FLAG_Z( B );
+        COND_SET_FLAG_N( B );
+    }
+
+    function AND_B_IX(){    // 0xE4
+        B = (B & get_indexed_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function BIT_B_IX(){    // 0xE5
+        let lo = (B & get_indexed_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+    }
+
+    function LDA_B_IX(){    // 0xE6
+        B = get_indexed_data();
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function STA_B_IX(){    // 0xE7
+        writeByte( get_indexed_addr(), B );
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function EOR_B_IX(){    // 0xE8
+        B = (B ^ get_indexed_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function ADC_B_IX(){    // 0xE9
+        let op1 = get_indexed_data();
+        let res = B + op1 + GET_FLAG( CF );
+        COND_SET_FLAG_H( (B ^ op1 ^ res) & 0x10 );
+        COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        B = res & 0xFF;
+        COND_SET_FLAG_Z( B );
+        COND_SET_FLAG_N( B );
+    }
+
+    function ORA_B_IX(){    // 0xEA
+        B = (B | get_indexed_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function ADD_B_IX(){    // 0xEB
+        let op1 = get_indexed_data();
+        let res = B + op1;
+        COND_SET_FLAG_H( (B ^ op1 ^ res) & 0x10 );
+        COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        B = res & 0xFF;
+        COND_SET_FLAG_Z( B );
+        COND_SET_FLAG_N( B );
+    }
+
+    function LDX_IX(){      // 0xEE
+        IX = readWord( get_indexed_addr() );
+        COND_SET_FLAG_N( IX >>> 8 );
+        COND_SET_FLAG_Z( IX       );
+        CLR_FLAG( VF );
+    }
+
+    function STX_IX(){      // 0xEF
+        writeWord( get_indexed_addr(), IX );
+        COND_SET_FLAG_N( IX >>> 8 );
+        COND_SET_FLAG_Z( IX       );
+        CLR_FLAG( VF );
+    }
+
+    function SUB_B_EX(){      // 0xF0
+        let op1 = get_extended_data();
+        let res = B - op1;
+        COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        B = res & 0xFF;
+        COND_SET_FLAG_Z( B );
+        COND_SET_FLAG_N( B );
+    }
+
+    function CMP_B_EX(){      // 0xF1
+        let op1 = get_extended_data();
+        let res = B - op1;
+        COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        COND_SET_FLAG_Z( res & 0xFF );
+        COND_SET_FLAG_N( res & 0xFF );
+    }
+
+    function SBC_B_EX(){      // 0xF2
+        let op1 = get_extended_data();
+        let res = B - op1 - GET_FLAG( CF );
+        COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        B = res & 0xFF;
+        COND_SET_FLAG_Z( B );
+        COND_SET_FLAG_N( B );
+    }
+
+    function AND_B_EX(){      // 0xF4
+        B = (B & get_extended_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function BIT_B_EX(){      // 0xF5
+        let lo = (B & get_extended_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( lo );
+        COND_SET_FLAG_Z( lo );
+    }
+
+    function LDA_B_EX(){      // 0xF6
+        B = get_extended_data();
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function STA_B_EX(){      // 0xF7
+        writeByte( get_extended_addr(), B );
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function EOR_B_EX(){      // 0xF8
+        B = (B ^ get_extended_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function ADC_B_EX(){      // 0xF9
+        let op1 = get_extended_data();
+        let res = B + op1 + GET_FLAG( CF );
+        COND_SET_FLAG_H( (B ^ op1 ^ res) & 0x10 );
+        COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        B = res & 0xFF;
+        COND_SET_FLAG_Z( B );
+        COND_SET_FLAG_N( B );
+    }
+
+    function ORA_B_EX(){      // 0xFA
+        B = (B | get_extended_data()) & 0xFF;
+        CLR_FLAG( VF );
+        COND_SET_FLAG_N( B );
+        COND_SET_FLAG_Z( B );
+    }
+
+    function ADD_B_EX(){      // 0xFB
+        let op1 = get_extended_data();
+        let res = B + op1;
+        COND_SET_FLAG_H( (B ^ op1 ^ res) & 0x10 );
+        COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+        COND_SET_FLAG_C( res );
+        B = res & 0xFF;
+        COND_SET_FLAG_Z( B );
+        COND_SET_FLAG_N( B );
+    }
+
+    function LDX_EX(){      // 0xFE
+        IX = readWord( get_extended_addr() );
+        COND_SET_FLAG_N( IX >>> 8 );
+        COND_SET_FLAG_Z( IX       );
+        CLR_FLAG( VF );
+    }
+
+    function STX_EX(){      // 0xFF
+        writeWord( get_extended_addr(), IX );
+        COND_SET_FLAG_N( IX >>> 8 );
+        COND_SET_FLAG_Z( IX       );
+        CLR_FLAG( VF );
+    }
+
+    function NOINS(){
+        console.log('MC6800.js illegal instruction: ' + ReturnHex( lastPC, 4 ) + " => " + ReturnHex(IR,2));
+//       i = 0;
+    }
+
+    function TXINS(){
+        LI = true;
+    }
+    
+
+	// -------------------------------------------------------------------------------------
+	// This is THE processor instruction execution function
+	// -------------------------------------------------------------------------------------
+	this.execute = function() {
+	
+//		var DAR, hi, lo, op1, res;
+		
+		// Execute only InstructionsPerInterval amount of instructions to emulate the CPU speed
+		for (let i = 0; i < InstructionsPerInterval; i++) {
+
+		    lastPC = PC;
+
+	        // -------------------------------------------------------------------------------------
+		    // Output some status based on useful PC addresses
+	        // -------------------------------------------------------------------------------------
+		    // if( lastPC == 0xCBBF ) hw.println( 'DER: MC6800.js >>>>> CRTRST: <<<<<' );
+		    // if( lastPC == 0xC888 ) hw.println( 'DER: MC6800.js >>>>> CHSCAN: <<<<<' );
+		    // if( lastPC == 0xCBEE ) hw.println( 'DER: MC6800.js >>>>>  PCHAR: <<<<<' );
+		    // if( lastPC == 0xC5B2 ) hw.println( 'DER: MC6800.js >>>>>   IDLE: <<<<<' );
+		    // if( lastPC == 0xC65C ) hw.println( 'DER: MC6800.js >>>>>  CIDLE: <<<<<' );
+		    
+	        // -------------------------------------------------------------------------------------
+		    // Process interrupts
+	        // -------------------------------------------------------------------------------------
+		    if( hw.checkNMI() ) {
+		    	if( !oldNMI ) {
+                	push_word( PC  );
+                	push_word( IX  );
+                	push_byte( A   );
+                	push_byte( B   );
+                	push_byte( CCR );
+                	SET_FLAG(  IF  );
+                	PC = readWord(NMI_VECTOR) & ADDR_MASK;
+           			lastPC = PC;
+                	//console.log(' >>>>> NMI <<<<<' );
+		    	}
+		    	oldNMI = 1;
+		    } else {
+		    	oldNMI = 0;
+		    	if( hw.checkIRQ() ) {
+		    		if( !GET_FLAG_BITS( IF ) ) {
+		    			if( !oldIRQ ) {
+                			push_word( PC  );
+                			push_word( IX  );
+                			push_byte( A   );
+                			push_byte( B   );
+                			push_byte( CCR );
+                			SET_FLAG(  IF  );
+                			PC = readWord(IRQ_VECTOR) & ADDR_MASK;
+                			lastPC = PC;
+                			//console.log(' >>>>> IRQ <<<<<' );
+		    			}
+		    			oldIRQ = 1;
+		    		} else {
+		    			oldIRQ = 0;
+		    		}
+		    	} else {
+		    		oldIRQ = 0;
+		    	}
+		    }
+		    
+			// -------------------------------------------------------------------------------------
+	        // Fetch instruction at Program Counter (PC) address, decode and execute the instruction
+	        // -------------------------------------------------------------------------------------
+			IR = fetch_byte();
+
+            instr[IR][1]();
+
+            if (LI){
+                i = 0;
+                LI = false;
+            }
+
+/*
+
+			switch( IR ) {
+
+                case 0x00:  // Stops illegal instruction errors on encountering 0x00                
+                case 0x01:
+                    instruction_mnemonic = "NOP";
+                    instruction_description = "(6800) No operation";
+                    break;
+                case 0x02:
+                    instruction_mnemonic = "NOP2";
+                    instruction_description = "(TekExtended) No operation";
+                    break;
+                case 0x03:
+                    instruction_mnemonic = "SFA";
+                    instruction_description = "(TekExtended) Store A <= F?";
+                    i = 0;
+                    break;
+                case 0x05:
+                    instruction_mnemonic = "TAP";
+                    instruction_description = "(TekExtended) Transfer Status Register P <= A?";
+                    // This might be a specific TAP for ROM/RAM space control to CCR bits 6-7?";
+                    i = 0;
+                    break;
+                case 0x06:
+                    instruction_mnemonic = "TAP";
+                    instruction_description = "(6800) Transfer Status Register P <= A";
+                    CCR = A & this.CCR_MASK;
+                    break;
+                case 0x07:
+                    instruction_mnemonic = "TPA";
+                    instruction_description = "(6800) Transfer A <= Status Register P";
+                    A = CCR | CCR_ALWAYS_ON;
+                    break;
+                case 0x08:
+                    instruction_mnemonic = "INX";
+                    instruction_description = "(6800) Increment IX";
+                    IX = (IX + 1) & ADDR_MASK;
+                    COND_SET_FLAG_Z( IX );
+                    break;
+                case 0x09:
+                    instruction_mnemonic = "DEX";
+                    instruction_description = "(6800) Decrement IX";
+                    IX = (IX - 1) & ADDR_MASK;
+                    COND_SET_FLAG_Z( IX );
+                    break;
+                case 0x0A:
+                    instruction_mnemonic = "CLV";
+                    instruction_description = "(6800) Clear overflow status bit";
+                    CLR_FLAG( VF );
+                    break;
+                case 0x0B:
+                    instruction_mnemonic = "SEV";
+                    instruction_description = "(6800) Set overflow status bit";
+                    SET_FLAG( VF );
+                    break;
+                case 0x0C:
+                    instruction_mnemonic = "CLC";
+                    instruction_description = "(6800) Clear carry status bit";
+                    CLR_FLAG( CF );
+                    break;
+                case 0x0D:
+                    instruction_mnemonic = "SEC";
+                    instruction_description = "(6800) Set carry status bit";
+                    SET_FLAG( CF );
+                    break;
+                case 0x0E:
+                    instruction_mnemonic = "CLI";
+                    instruction_description = "(6800) Clear interrupt mask status bit";
+                    CLR_FLAG( IF );
+                    break;
+                case 0x0F:
+                    instruction_mnemonic = "SEI";
+                    instruction_description = "(6800) Set interrupt mask status bit";
+                    SET_FLAG( IF );
+                    break;
+                case 0x10:
+                    instruction_mnemonic = "SBA";
+                    instruction_description = "(6800) Store A <= A - B";
+                    op1 = B;
+                    res = A - op1;
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    A = res & 0xFF;
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_N( A );
+                    break;
+                case 0x11:
+                    instruction_mnemonic = "CBA";
+                    instruction_description = "(6800) Compare A - B";
+                    op1 = B;
+                    res = A - op1;
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    COND_SET_FLAG_Z( res & 0xFF );
+                    COND_SET_FLAG_N( res & 0xFF );
+                    break;
+                case 0x12:
+                    instruction_mnemonic = "TAPX";
+                    instruction_description = "(TekExtended) Transfer Extended Status Register PX <= A?";
+                    i = 0;
+                    break;
+                case 0x13:
+                    instruction_mnemonic = "TPAX";
+                    instruction_description = "(TekExtended) Transfer A <= Extended Status Register?";
+                    i = 0;
+                    break;
+                case 0x14:
+                    instruction_mnemonic = "ADXI";
+                    instruction_description = "(TekExtended) ???";
+                    i = 0;
+                    break;
+                case 0x15:
+                    instruction_mnemonic = "ASPI";
+                    instruction_description = "(TekExtended) ???";
+                    i = 0;
+                    break;
+                case 0x16:
+                    instruction_mnemonic = "TAB";
+                    instruction_description = "(6800) Transfer A => B";
+                    B = A;
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    CLR_FLAG( VF );
+                    break;
+                case 0x17:
+                    instruction_mnemonic = "TBA";
+                    instruction_description = "(6800) Transfer B => A";
+                    A = B;
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    CLR_FLAG( VF );
+                    break;
+                case 0x18:
+                    instruction_mnemonic = "SDA";
+                    instruction_description = "(TekExtended) Store A <= D?";
+                    i = 0;
+                    break;
+                case 0x19:
+                    instruction_mnemonic = "DAA";
+                    instruction_description = "(6800) Decimal Adjust Accumulator A";
+                    // Note: TekExtended version does NOT implement this instruction
+                    DAR = A & 0x0F;
+                    op1 = GET_FLAG( CF );
+                    if( (DAR > 9) || GET_FLAG( CF ) ) {
+                        DAR += 6;
+                        A &= 0xF0;
+                        A |= (DAR & 0x0F);
+                        COND_SET_FLAG( DAR & 0x10, CF );
+                    }
+                    DAR = (A >>> 4) & 0x0F;
+                    if( (DAR > 9) || GET_FLAG( CF ) ) {
+                        DAR += 6;
+                        if( GET_FLAG( CF ) ) 
+                            DAR++;
+                        A &= 0x0F;
+                        A |= (DAR << 4);
+                    }
+                    COND_SET_FLAG( op1, CF );
+                    if( (DAR << 4) & 0x100 )
+                        SET_FLAG( CF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    A &= 0xFF;
+                    break;
+                case 0x1A:
+                    instruction_mnemonic = "NLDXX";
+                    instruction_description = "(TekExtended) N Load IX <= M(indexed)?";
+                    i = 0;
+                    break;
+                case 0x1B:
+                    instruction_mnemonic = "ABA";
+                    instruction_description = "(6800) A <= A + B";
+                    op1 = B;
+                    res = A + op1;
+                    COND_SET_FLAG_H( (A ^ op1 ^ res) & 0x10 );
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    A = res & 0xFF;
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_N( A );
+                    break;
+                case 0x1C:
+                    instruction_mnemonic = "NLDAX";
+                    instruction_description = "(TekExtended) N Load IX <= A?";
+                    i = 0;
+                    break;
+                case 0x1D:
+                    instruction_mnemonic = "NLDBX";
+                    instruction_description = "(TekExtended) N Load IX <= B?";
+                    i = 0;
+                    break;
+                case 0x1E:
+                    instruction_mnemonic = "NSTAX";
+                    instruction_description = "(TekExtended) N Store A <= IX?";
+                    i = 0;
+                    break;
+                case 0x1F:
+                    instruction_mnemonic = "JMPAX";
+                    instruction_description = "(TekExtended) Jump A IX?";
+                    i = 0;
+                    break;
+                case 0x20:
+                    instruction_mnemonic = "BRA";
+                    instruction_description = "(6800) Branch Always";
+                    branch_relative( 1 );
+                    break;
+                case 0x21:
+                    instruction_mnemonic = "SDB";
+                    instruction_description = "(TekExtended) Store or subtract B <= D? Direct?";
+                    i = 0;
+                    break;
+                case 0x22:
+                    instruction_mnemonic = "BHI";
+                    instruction_description = "(6800) Branch if Higher (unsigned)";
+                    branch_relative( !(GET_FLAG(CF) | GET_FLAG(ZF)) );
+                    break;
+                case 0x23:
+                    instruction_mnemonic = "BLS";
+                    instruction_description = "(6800) Branch if Lower or Same (unsigned)";
+                    branch_relative( GET_FLAG(CF) | GET_FLAG(ZF) );
+                    break;
+                case 0x24:
+                    instruction_mnemonic = "BCC";
+                    instruction_description = "(6800) Branch if Carry Clear (CF = 0)";
+                    branch_relative( !GET_FLAG(CF) );
+                    break;
+                case 0x25:
+                    instruction_mnemonic = "BCS";
+                    instruction_description = "(6800) Branch if Carry Set (CF = 1)";
+                    branch_relative( GET_FLAG(CF) );
+                    break;
+                case 0x26: 
+                    instruction_mnemonic = "BNE";
+                    instruction_description = "(6800) Branch if Not Equal (ZF = 0)";
+                    branch_relative( !GET_FLAG(ZF) );
+                    break;
+                case 0x27:
+                    instruction_mnemonic = "BEQ";
+                    instruction_description = "(6800) Branch if Equal (ZF = 1)";
+                    branch_relative( GET_FLAG(ZF) );
+                    break;
+                case 0x28:
+                    instruction_mnemonic = "BVC";
+                    instruction_description = "(6800) Branch if Overflow Clear (VF = 0)";
+                    branch_relative( !GET_FLAG(VF) );
+                    break;
+                case 0x29:
+                    instruction_mnemonic = "BVS";
+                    instruction_description = "(6800) Branch if Overflow Set (VF = 1)";
+                    branch_relative( GET_FLAG(VF) );
+                    break;
+                case 0x2A:
+                    instruction_mnemonic = "BPL";
+                    instruction_description = "(6800) Branch if Plus/Positive (N = 0)";
+                    branch_relative( !GET_FLAG(NF) );
+                    break;
+                case 0x2B:
+                    instruction_mnemonic = "BMI";
+                    instruction_description = "(6800) Branch if Minus/Negative (N = 1)";
+                    branch_relative( GET_FLAG(NF) );
+                    break;
+                case 0x2C:
+                    instruction_mnemonic = "BGE";
+                    instruction_description = "(6800) Branch if Greater or Equal (signed)";
+                    branch_relative( !(GET_FLAG(NF) ^ GET_FLAG(VF)) );
+                    break;
+                case 0x2D:
+                    instruction_mnemonic = "BLT";
+                    instruction_description = "(6800) Branch if Less Than (signed)";
+                    branch_relative( GET_FLAG(NF) ^ GET_FLAG(VF) );
+                    break;
+                case 0x2E:
+                    instruction_mnemonic = "BGT";
+                    instruction_description = "(6800) Branch if Greater Than (signed)";
+                    branch_relative( !(GET_FLAG(ZF) | (GET_FLAG(NF) ^ GET_FLAG(VF))) );
+                    break;
+                case 0x2F:
+                    instruction_mnemonic = "BLE";
+                    instruction_description = "(6800) Branch if Less or Equal (signed)";
+                    branch_relative( GET_FLAG(ZF) | (GET_FLAG(NF) ^ GET_FLAG(VF)) );
+                    break;
+                case 0x30:
+                    instruction_mnemonic = "TSX";
+                    instruction_description = "(6800) Transfer IX <= SP + 1";
+                    IX = (SP + 1) & ADDR_MASK;
+                    break;
+                case 0x31:
+                    instruction_mnemonic = "INS";
+                    instruction_description = "(6800) Increment SP";
+                    SP = (SP + 1) & ADDR_MASK;
+                    break;
+                case 0x32:
+                    instruction_description = "(6800) Pull/Pop Stack to A";
+                    instruction_mnemonic = "PUL A";
+                    A = pop_byte();
+                    break;
+                case 0x33:
+                    instruction_mnemonic = "PUL B";
+                    instruction_description = "(6800) Pull/Pop Stack to B";
+                    B = pop_byte();
+                    break;
+                case 0x34:
+                    instruction_mnemonic = "DES";
+                    instruction_description = "(6800) Decrement SP";
+                    SP = (SP - 1) & ADDR_MASK;
+                    break;
+                case 0x35:
+                    instruction_mnemonic = "TXS";
+                    instruction_description = "(6800) Transfer SP <= IX - 1";
+                    SP = (IX - 1) & ADDR_MASK;
+                    break;
+                case 0x36:
+                    instruction_mnemonic = "PSH A";
+                    instruction_description = "(6800) Push A to Stack";
+                    push_byte( A );
+                    break;
+                case 0x37:
+                    instruction_mnemonic = "PSH B";
+                    instruction_description = "(6800) Push B to Stack";
+                    push_byte( B );
+                    break;
+                case 0x38:
+                    instruction_mnemonic = "JMPIN";
+                    instruction_description = "(TekExtended) Jump IN? Extended";
+                    i = 0;
+                    break;
+                case 0x39:
+                    instruction_mnemonic = "RTS";
+                    instruction_description = "(6800) Return from Subroutine - Pop Stack to PC";
+                    PC = pop_word();
+                    break;
+                case 0x3A:
+                    instruction_mnemonic = "FPSHD";
+                    instruction_description = "(TekExtended) Function Push M(direct)";
+                    i = 0;
+                    break;
+                case 0x3B:
+                    instruction_mnemonic = "RTI";
+                    instruction_description = "(6800) Return from Interrupt - Pop Stack and restore Registers";
+                    CCR = pop_byte();
+                    B   = pop_byte();
+                    A   = pop_byte();
+                    IX  = pop_word();
+                    PC  = pop_word();
+                    break;
+                case 0x3C:
+                    instruction_mnemonic = "FPSHX";
+                    instruction_description = "(TekExtended) Function Push M(indexed)";
+                    i = 0;
+                    break;
+                case 0x3D:
+                    instruction_mnemonic = "FPSH";
+                    instruction_description = "(TekExtended) Function Push M(extended)";
+                    i = 0;
+                    break;
+                case 0x3E:
+                    instruction_mnemonic = "WAI";
+                    instruction_description = "(6800) Wait For Interrupt - Push Registers to Stack and jump to Reset vector";
+                    push_word( PC  );
+                    push_word( IX  );
+                    push_byte( A   );
+                    push_byte( B   );
+                    push_byte( CCR );
+                    if( GET_FLAG(IF) ) {
+                        //@@@ reason = STOP_HALT;
+                        //@@@ continue;
+                    } else {
+                        SET_FLAG( IF );
+                        // Fetch the Reset vector for the PC to jump to the WAI routine
+                        // This halts the processor until a non-maskable interrupt arrives
+                        PC = readWord(RESET_VECTOR) & ADDR_MASK;
+                    }
+                    break;
+                case 0x3F:
+                    instruction_mnemonic = "SWI";
+                    instruction_description = "(6800) Software Interrupt - Push Registers to Stack and jump to SWI vector";
+                    push_word( PC  );
+                    push_word( IX  );
+                    push_byte( A   );
+                    push_byte( B   );
+                    push_byte( CCR );
+                    SET_FLAG(  IF  );
+                    // Fetch the SWI interrupt vector for the PC to jump to the SWI routine
+                    PC = readWord(SWI_VECTOR) & ADDR_MASK;
+                    break;
+                case 0x40:
+                    instruction_mnemonic = "NEG A";
+                    instruction_description = "(6800) Negate A";
+                    A = (0 - A) & 0xFF;
+                    COND_SET_FLAG_V( A == 0x80 );
+                    COND_SET_FLAG(   A == 0x00, CF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0x41:
+                    instruction_mnemonic = "FPSHI";
+                    instruction_description = "(TekExtended) Function Push Immediate";
+                    i = 0;
+                    break;
+                case 0x3D:
+                    instruction_mnemonic = "FPULD";
+                    instruction_description = "(TekExtended) Function Pull/Pop from M(direct)?";
+                    i = 0;
+                    break;
+                case 0x43:
+                    instruction_mnemonic = "COM A";
+                    instruction_description = "(6800) Ones Complement A";
+                    A = (~A) & 0xFF;
+                    CLR_FLAG( VF );
+                    SET_FLAG( CF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0x44:
+                    instruction_mnemonic = "LSR A";
+                    instruction_description = "(6800) Logical Shift Right A";
+                    COND_SET_FLAG( A & 0x01, CF );
+                    A = (A >>> 1) & 0xFF;
+                    CLR_FLAG( NF );
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+                    break;
+                case 0x45:
+                    instruction_mnemonic = "FPULX";
+                    instruction_description = "(TekExtended) Function Pull/Pop from M(indexed)?";
+                    i = 0;
+                    break;
+                case 0x46:
+                    instruction_mnemonic = "ROR A";
+                    instruction_description = "(6800) Rotate Right A";
+                    hi = GET_FLAG( CF );
+                    COND_SET_FLAG( A & 0x01, CF );
+                    A = (A >>> 1) & 0xFF;
+                    if( hi )
+                        A |= 0x80;
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+                    break;
+                case 0x47:
+                    instruction_mnemonic = "ASR A";
+                    instruction_description = "(6800) Arithmetic Shift Right A";
+                    COND_SET_FLAG( A & 0x01, CF );
+                    lo = A & 0x80;
+                    A = (A >>> 1) & 0xFF;
+                    A |= lo; 
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+                    break;
+                case 0x48:
+                    instruction_mnemonic = "ASL A";
+                    instruction_description = "(6800) Arithmetic Shift Left A";
+                    COND_SET_FLAG( A & 0x80, CF );
+                    A = (A << 1) & 0xFF;
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+                    break;
+                case 0x49:
+                    instruction_mnemonic = "ROL A";
+                    instruction_description = "(6800) Rotate Left A";
+                    hi = GET_FLAG( CF );
+                    COND_SET_FLAG( A & 0x80, CF );
+                    A = (A << 1) & 0xFF;
+                    if( hi )
+                        A |= 0x01;
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+                    break;
+                case 0x4A:
+                    instruction_mnemonic = "DEC A";
+                    instruction_description = "(6800) Decrement A";
+                    COND_SET_FLAG_V( A == 0x80 );
+                    A = (A - 1) & 0xFF;
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0x4B:
+                    instruction_mnemonic = "FPUL";
+                    instruction_description = "(TekExtended) Function Pull/Pop from M(extended)";
+                    i = 0;
+                    break;
+                case 0x4C:
+                    instruction_mnemonic = "INC A";
+                    instruction_description = "(6800) Increment A";
+                    COND_SET_FLAG_V( A == 0x7F );
+                    A = (A + 1) & 0xFF;
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0x4D:
+                    instruction_mnemonic = "TST A";
+                    instruction_description = "(6800) Test A";
+                    lo = (A - 0) & 0xFF;
+                    CLR_FLAG( VF );
+                    CLR_FLAG( CF );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    break;
+                case 0x4E:
+                    instruction_mnemonic = "FDUP";
+                    instruction_description = "(TekExtended) Function DUP? Duplicate?";
+                    i = 0;
+                    break;
+                case 0x4F:
+                    instruction_mnemonic = "CLR A";
+                    instruction_description = "(6800) Clear A";
+                    A = 0;
+                    CLR_FLAG( NF );
+                    CLR_FLAG( VF );
+                    CLR_FLAG( CF );
+                    SET_FLAG( ZF );
+                    break;
+                case 0x50:
+                    instruction_mnemonic = "NEG B";
+                    instruction_description = "(6800) Negate B";
+                    B = (0 - B) & 0xFF;
+                    COND_SET_FLAG_V( B == 0x80 );
+                    COND_SET_FLAG(   B == 0x00, CF );
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0x51:
+                    instruction_mnemonic = "FSWP";
+                    instruction_description = "(TekExtended) Function SWP?";
+                    i = 0;
+                    break;
+                case 0x52:
+                    instruction_mnemonic = "FADD";
+                    instruction_description = "(TekExtended) Function Add";
+                    i = 0;
+                    break;
+                case 0x53:
+                    instruction_mnemonic = "COM B";
+                    instruction_description = "(6800) Ones Complement B";
+                    B = (~B) & 0xFF;
+                    CLR_FLAG( VF );
+                    SET_FLAG( CF );
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0x54:
+                    instruction_mnemonic = "LSR B";
+                    instruction_description = "(6800) Logical Shift Right B";
+                    COND_SET_FLAG( B & 0x01, CF );
+                    B = (B >>> 1) & 0xFF;
+                    CLR_FLAG( NF );
+                    COND_SET_FLAG_Z( B );
+                    COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+                    break;
+                case 0x55:
+                    instruction_mnemonic = "FSUB";
+                    instruction_description = "(TekExtended) Function Subtract";
+                    i = 0;
+                    break;
+                case 0x56:
+                    instruction_mnemonic = "ROR B";
+                    instruction_description = "(6800) Rotate Right B";
+                    hi = GET_FLAG( CF );
+                    COND_SET_FLAG( B & 0x01, CF );
+                    B = (B >>> 1) & 0xFF;
+                    if( hi )
+                        B |= 0x80;
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+                    break;
+                case 0x57:
+                    instruction_mnemonic = "ASR B";
+                    instruction_description = "(6800) Arithmetic Shift Right B";
+                    COND_SET_FLAG( B & 0x01, CF );
+                    lo = B & 0x80;
+                    B = (B >>> 1) & 0xFF;
+                    B |= lo; 
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF));
+                    break;
+                case 0x58:
+                    instruction_mnemonic = "ASL B";
+                    instruction_description = "(6800) Arithmetic Shift Left B";
+                    COND_SET_FLAG( B & 0x80, CF );
+                    B = (B << 1) & 0xFF;
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+                    break;
+                case 0x59:
+                    instruction_mnemonic = "ROL B";
+                    instruction_description = "(6800) Rotate Left B";
+                    hi = GET_FLAG( CF );
+                    COND_SET_FLAG( B & 0x80, CF );
+                    B = (B << 1) & 0xFF;
+                    if( hi )
+                        B |= 0x01;
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+                    break;
+                case 0x5A:
+                    instruction_mnemonic = "DEC B";
+                    instruction_description = "(6800) Decrement B";
+                    COND_SET_FLAG_V( B == 0x80 );
+                    B = (B - 1) & 0xFF;
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0x5B:
+                    instruction_mnemonic = "FMUL";
+                    instruction_description = "(TekExtended) Function Multiply";
+                    i = 0;
+                    break;
+                case 0x5C:
+                    instruction_mnemonic = "INC B";
+                    instruction_description = "(6800) Increment B";
+                    COND_SET_FLAG_V( B == 0x7F );
+                    B = (B + 1) & 0xFF;
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0x5D:
+                    instruction_mnemonic = "TST B";
+                    instruction_description = "(6800) Test B";
+                    lo = (B - 0) & 0xFF;
+                    CLR_FLAG( VF );
+                    CLR_FLAG( CF );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    break;
+                case 0x5E:
+                    instruction_mnemonic = "FDIV";
+                    instruction_description = "(TekExtended) Function Divide";
+                    i = 0;
+                    break;
+                case 0x5F:
+                    instruction_mnemonic = "CLR B";
+                    instruction_description = "(6800) Clear B";
+                    B = 0;
+                    CLR_FLAG( NF );
+                    CLR_FLAG( VF );
+                    CLR_FLAG( CF );
+                    SET_FLAG( ZF );
+                    break;
+                case 0x60:
+                    instruction_mnemonic = "NEG X";
+                    instruction_description = "(6800) Negate M(indexed)";
+                    DAR = get_indexed_addr();
+                    lo = (0 - readByte( DAR ) ) & 0xFF;
+                    writeByte( DAR, lo );
+                    COND_SET_FLAG_V( lo == 0x80 );
+                    COND_SET_FLAG(   lo == 0x00, CF );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    break;
+                case 0x61:
+                    instruction_mnemonic = "FNORM";
+                    instruction_description = "(TekExtended) Function Normalize";
+                    i = 0;
+                    break;
+                case 0x62:
+                    instruction_mnemonic = "PSHRET";
+                    instruction_description = "(TekExtended) Push return address in M(direct) to stack?";
+                    i = 0;
+                    break;
+                case 0x63:
+                    instruction_mnemonic = "COM X";
+                    instruction_description = "(6800) Ones complement M(indexed)";
+                    DAR = get_indexed_addr();
+                    lo = ~readByte( DAR );
+                    lo &= 0xFF;
+                    writeByte( DAR, lo );
+                    CLR_FLAG( VF );
+                    SET_FLAG( CF );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    break;
+                case 0x64:
+                    instruction_mnemonic = "LSR X";
+                    instruction_description = "(6800) Logical Shift Right M(indexed)";
+                    DAR = get_indexed_addr();
+                    lo = readByte( DAR );
+                    COND_SET_FLAG( lo & 0x01, CF );
+                    lo >>>= 1;
+                    writeByte( DAR, lo );
+                    CLR_FLAG( NF );
+                    COND_SET_FLAG_Z( lo );
+                    COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+                    break;
+                case 0x65:
+                    instruction_mnemonic = "RTRN";
+                    instruction_description = "(TekExtended) Return to address in M(direct)? Direct";
+                    i = 0;
+                    break;
+                case 0x66:
+                    instruction_mnemonic = "ROR X";
+                    instruction_description = "(6800) Rotate Right M(indexed)";
+                    DAR = get_indexed_addr();
+                    lo = readByte( DAR );
+                    hi = GET_FLAG( CF );
+                    COND_SET_FLAG( lo & 0x01, CF );
+                    lo >>>= 1;
+                    if( hi )
+                        lo |= 0x80;
+                    writeByte( DAR, lo );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+                    break;
+                case 0x67:
+                    instruction_mnemonic = "ASR X";
+                    instruction_description = "(6800) Arithmetic Shift Right M(indexed)";
+                    DAR = get_indexed_addr();
+                    lo = readByte( DAR );
+                    COND_SET_FLAG( lo & 0x01, CF );
+                    lo = (lo & 0x80) | (lo >>> 1);
+                    writeByte( DAR, lo );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+                    break;
+                case 0x68:
+                    instruction_mnemonic = "ASL X";
+                    instruction_description = "(6800) Arithmetic Shift Left M(indexed)";
+                    DAR = get_indexed_addr();
+                    lo = readByte( DAR );
+                    COND_SET_FLAG( lo & 0x80, CF );
+                    lo <<= 1;
+                    lo  &= 0xFF;
+                    writeByte( DAR, lo );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+                    break;
+                case 0x69:
+                    instruction_mnemonic = "ROL X";
+                    instruction_description = "(6800) Rotate Left M(indexed)";
+                    DAR = get_indexed_addr();
+                    lo = readByte( DAR );
+                    hi = GET_FLAG( CF );
+                    COND_SET_FLAG( lo & 0x80, CF );
+                    lo <<= 1;
+                    lo  &= 0xFF;
+                    if( hi )
+                        lo |= 0x01;
+                    writeByte( DAR, lo );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+                    break;
+                case 0x6A:
+                    instruction_mnemonic = "DEC X";
+                    instruction_description = "(6800) Decrement M(indexed)";
+                    DAR = get_indexed_addr();
+                    lo = readByte( DAR );
+                    COND_SET_FLAG_V( lo == 0x80 );
+                    lo = (lo - 1) & 0xFF;
+                    writeByte( DAR, lo );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    break;
+                case 0x6B:
+                    instruction_mnemonic = "PSH X";
+                    instruction_description = "(TekExtended) Push IX to Stack";
+                    i = 0;
+                    break;
+                case 0x6C:
+                    instruction_mnemonic = "INC X";
+                    instruction_description = "(6800) Increment M(indexed)";
+                    DAR= get_indexed_addr();
+                    lo = readByte( DAR );
+                    COND_SET_FLAG_V( lo == 0x7F );
+                    lo = (lo + 1) & 0xFF;
+                    writeByte( DAR, lo );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    break;
+                case 0x6D:
+                    instruction_mnemonic = "TST X";
+                    instruction_description = "(6800) Test M(indexed)";
+                    lo = (get_indexed_data() - 0) & 0xFF;
+                    CLR_FLAG( VF );
+                    CLR_FLAG( CF );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    break;
+                case 0x6E:
+                    instruction_mnemonic = "JMP X";
+                    instruction_description = "(6800) Jump to indexed address";
+                    PC = get_indexed_addr();
+                    break;
+                case 0x6F:
+                    instruction_mnemonic = "CLR X";
+                    instruction_description = "(6800) Clear M(indexed)";
+                    writeByte( get_indexed_addr(), 0 );
+                    CLR_FLAG( NF );
+                    CLR_FLAG( VF );
+                    CLR_FLAG( CF );
+                    SET_FLAG( ZF );
+                    break;
+                case 0x70:
+                    instruction_mnemonic = "NEG";
+                    instruction_description = "(6800) Negate M(extended)";
+                    DAR = get_extended_addr();
+                    lo = (0 - readByte( DAR )) & 0xFF;
+                    writeByte( DAR, lo );                
+                    COND_SET_FLAG_V( lo == 0x80 );
+                    COND_SET_FLAG(   lo == 0x00, CF );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    break;
+                case 0x71:
+                    instruction_mnemonic = "STROKE";
+                    instruction_description = "(TekExtended) ???";
+                    i = 0;
+                    break;
+                case 0x72:
+                    instruction_mnemonic = "EC";
+                    instruction_description = "(TekExtended) ??? Error Check?";
+                    i = 0;
+                    break;
+                case 0x73:
+                    instruction_mnemonic = "COM";
+                    instruction_description = "(6800) Ones complement M(extended)";
+                    DAR = get_extended_addr();
+                    lo = ~readByte( DAR );
+                    lo &= 0xFF;
+                    writeByte( DAR, lo );
+                    CLR_FLAG( VF );
+                    SET_FLAG( CF );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    break;
+                case 0x74:
+                    instruction_mnemonic = "LSR";
+                    instruction_description = "(6800) Logical Shift Right M(extended)";
+                    DAR = get_extended_addr();
+                    lo = readByte( DAR );
+                    COND_SET_FLAG( lo & 0x01, CF );
+                    lo >>>= 1;
+                    writeByte( DAR, lo );
+                    CLR_FLAG( NF );
+                    COND_SET_FLAG_Z( lo );
+                    COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+                    break;
+                case 0x75:
+                    instruction_mnemonic = "PUL X";
+                    instruction_description = "(TekExtended) Pull/Pop IX from Stack";
+                    i = 0;
+                    break;
+                case 0x76:
+                    instruction_mnemonic = "ROR";
+                    instruction_description = "(6800) Rotate Right M(extended)";
+                    DAR = get_extended_addr();
+                    hi = GET_FLAG( CF );
+                    lo = readByte( DAR );
+                    COND_SET_FLAG( lo & 0x01, CF );
+                    lo >>>= 1;
+                    if( hi )
+                        lo |= 0x80;
+                    writeByte( DAR, lo );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+                    break;
+                case 0x77:
+                    instruction_mnemonic = "ASR";
+                    instruction_description = "(6800) Arithmetic Shift Right M(extended)";
+                    DAR = get_extended_addr();
+                    lo = readByte( DAR );
+                    COND_SET_FLAG( lo & 0x01, CF );
+                    hi = lo & 0x80;
+                    lo >>>= 1;
+                    lo |= hi;
+                    writeByte( DAR, lo );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+                    break;
+                case 0x78:
+                    instruction_mnemonic = "ASL";
+                    instruction_description = "(6800) Arithmetic Shift Left M(extended)";
+                    DAR = get_extended_addr();
+                    lo = readByte( DAR );
+                    COND_SET_FLAG( lo & 0x80, CF );
+                    lo <<= 1;
+                    lo  &= 0xFF;
+                    writeByte( DAR, lo );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+                    break;
+                case 0x79:
+                    instruction_mnemonic = "ROL";
+                    instruction_description = "(6800) Rotate Left M(extended)";
+                    DAR = get_extended_addr();
+                    lo = readByte( DAR );
+                    hi = GET_FLAG( CF );
+                    COND_SET_FLAG( lo & 0x80, CF );
+                    lo <<= 1;
+                    lo  &= 0xFF;
+                    if( hi )
+                        lo |= 0x01;
+                    writeByte( DAR, lo );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    COND_SET_FLAG_V( GET_FLAG(NF) ^ GET_FLAG(CF) );
+                    break;
+                case 0x7A:
+                    instruction_mnemonic = "DEC";
+                    instruction_description = "(6800) Decrement M(extended)";
+                    DAR = get_extended_addr();
+                    lo = readByte( DAR );
+                    COND_SET_FLAG_V( lo == 0x80 );
+                    lo = (lo - 1) & 0xFF;
+                    writeByte( DAR, lo );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    break;
+                case 0x7C:
+                    instruction_mnemonic = "INC";
+                    instruction_description = "(6800) Increment M(extended)";
+                    DAR = get_extended_addr();
+                    lo = readByte( DAR );
+                    COND_SET_FLAG_V( lo == 0x7F );
+                    lo = (lo + 1) & 0xFF;
+                    writeByte( DAR, lo );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    break;
+                case 0x7D:
+                    instruction_mnemonic = "TST";
+                    instruction_description = "(6800) Test M(extended)";
+                    lo = readByte( get_extended_addr() ) - 0;
+                    CLR_FLAG( VF );
+                    CLR_FLAG( CF );
+                    COND_SET_FLAG_N( lo );
+                    lo &= 0xFF;
+                    COND_SET_FLAG_Z( lo );
+                    break;
+                case 0x7E:
+                    instruction_mnemonic = "JMP";
+                    instruction_description = "(6800) Jump to extended address";
+                    PC = get_extended_addr() & ADDR_MASK;
+                    break;
+                case 0x7F:
+                    instruction_mnemonic = "CLR";
+                    instruction_description = "(6800) Clear M(extended)";
+                    writeByte( get_extended_addr(), 0 );
+                    CLR_FLAG( NF );
+                    CLR_FLAG( VF );
+                    CLR_FLAG( CF );
+                    SET_FLAG( ZF );
+                    break;
+                case 0x80:
+                    instruction_mnemonic = "SUB A";
+                    instruction_description = "(6800) A <= A - immediate (8-bit)";
+                    op1 = fetch_byte();
+                    res = A - op1;
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    A = res & 0xFF;
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_N( A );
+                    break;
+                case 0x81:
+                    instruction_mnemonic = "CMP A";
+                    instruction_description = "(6800) Compare A - immediate (8-bit)";
+                    op1 = fetch_byte();
+                    res = A - op1;
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    COND_SET_FLAG_Z( res & 0xFF );
+                    COND_SET_FLAG_N( res & 0xFF );
+                    break;
+                case 0x82:
+                    instruction_mnemonic = "SBC A";
+                    instruction_description = "(6800) A <= A - immediate (8-bit) with carry";
+                    op1 = fetch_byte();
+                    res = A - op1 - GET_FLAG( CF );
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    A = res & 0xFF;
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_N( A );
+                    break;
+                case 0x84:
+                    instruction_mnemonic = "AND A";
+                    instruction_description = "(6800) A <= A and immediate (8-bit)";
+                    A = (A & fetch_byte()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0x85:
+                    instruction_mnemonic = "BIT A";
+                    instruction_description = "(6800) Bit test A and immediate (8-bit)";
+                    lo = (A & fetch_byte()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    break;
+                case 0x86:
+                    instruction_mnemonic = "LDA A";
+                    instruction_description = "(6800) Load A <= immediate (8-bit)";
+                    A = fetch_byte();
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0x88:
+                    instruction_mnemonic = "EOR A";
+                    instruction_description = "(6800) A <= A xor immediate (8-bit)";
+                    A = (A ^ fetch_byte()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0x89:
+                    instruction_mnemonic = "ADC A";
+                    instruction_description = "(6800) A <= A + immediate (8-bit) with carry";
+                    op1 = fetch_byte();
+                    res = A + op1 + GET_FLAG( CF );
+                    COND_SET_FLAG_H( (A ^ op1 ^ res) & 0x10 );
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    A = res & 0xFF;
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_N( A );
+                    break;
+                case 0x8A:
+                    instruction_mnemonic = "ORA A";
+                    instruction_description = "(6800) A <= A or immediate (8-bit)";
+                    A = (A | fetch_byte()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0x8B:
+                    instruction_mnemonic = "ADD A";
+                    instruction_description = "(6800) A <= A + immediate (8-bit)";
+                    op1 = fetch_byte();
+                    res = A + op1;
+                    COND_SET_FLAG_H( (A ^ op1 ^ res) & 0x10 );
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    A = res & 0xFF;
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_N( A );
+                    break;
+                case 0x8C:
+                    instruction_mnemonic = "CPX";
+                    instruction_description = "(6800) Compare IX - immediate (16-bit)";
+                    op1 = IX - fetch_word();
+                    COND_SET_FLAG_Z( op1           );
+                    COND_SET_FLAG_N( op1 >>> 8     );
+                    COND_SET_FLAG_V( op1 & 0x10000 );
+                    break;
+                case 0x8D:
+                    instruction_mnemonic = "BSR";
+                    instruction_description = "(6800) Branch to Subroutine";
+                    lo = get_relative_addr();
+                    push_word( PC );
+                    PC = PC + lo;
+                    PC &= ADDR_MASK;
+                    break;
+                case 0x8E:
+                    instruction_mnemonic = "LDS";
+                    instruction_description = "(6800) Load Stack Pointer with extended address";
+                    SP = get_extended_addr();
+                    COND_SET_FLAG_N( SP >>> 8);
+                    COND_SET_FLAG_Z( SP      );
+                    CLR_FLAG( VF );
+                    break;
+                case 0x90:
+                    instruction_mnemonic = "SUB A D";
+                    instruction_description = "(6800) A <= A - M(direct)";
+                    op1 = get_direct_data();
+                    res = A - op1;
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    A = res & 0xFF;
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_N( A );
+                    break;
+                case 0x91:
+                    instruction_mnemonic = "CMP A D";
+                    instruction_description = "(6800) Compare A - M(direct)";
+                    op1 = get_direct_data();
+                    res = A - op1;
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    COND_SET_FLAG_Z( res & 0xFF );
+                    COND_SET_FLAG_N( res & 0xFF );
+                    break;
+                case 0x92:
+                    instruction_mnemonic = "SBC A D";
+                    instruction_description = "(6800) A <= A - M(direct) with carry";
+                    op1 = get_direct_data();
+                    res = A - op1 - GET_FLAG( CF );
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    A = res & 0xFF;
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_N( A );
+                    break;
+                case 0x94:
+                    instruction_mnemonic = "AND A D";
+                    instruction_description = "(6800) A <= A and M(direct)";
+                    A = (A & get_direct_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0x95:
+                    instruction_mnemonic = "BIT A D";
+                    instruction_description = "(6800) Bit test A and M(direct)";
+                    lo = (A & get_direct_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    break;
+                case 0x96:
+                    instruction_mnemonic = "LDA A D";
+                    instruction_description = "(6800) Load A <= M(direct)";
+                    A = get_direct_data();
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0x97:
+                    instruction_mnemonic = "STA A D";
+                    instruction_description = "(6800) Store M(direct) <= A";
+                    writeByte( get_direct_addr(), A );
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0x98:
+                    instruction_mnemonic = "EOR A D";
+                    instruction_description = "(6800) A <= A xor M(direct)";
+                    A = (A ^ get_direct_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0x99:
+                    instruction_mnemonic = "ADC A D";
+                    instruction_description = "(6800) A <= A + M(direct) with carry";
+                    op1 = get_direct_data();
+                    res = A + op1 + GET_FLAG( CF );
+                    COND_SET_FLAG_H( (A ^ op1 ^ res) & 0x10 );
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    A = res & 0xFF;
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_N( A );
+                    break;
+                case 0x9A:
+                    instruction_mnemonic = "ORA A D";
+                    instruction_description = "(6800) A <= A or M(direct)";
+                    A = (A | get_direct_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0x9B:
+                    instruction_mnemonic = "ADD A D";
+                    instruction_description = "(6800) A <= A or M(direct)";
+                    op1 = get_direct_data();
+                    res = A + op1;
+                    COND_SET_FLAG_H( (A ^ op1 ^ res) & 0x10 );
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    A = res & 0xFF;
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_N( A );
+                    break;
+                case 0x9C:
+                    instruction_mnemonic = "CPX D";
+                    instruction_description = "(6800) Compare IX - M(direct)";
+                    op1 = IX - readWord( get_direct_addr() );
+                    COND_SET_FLAG_Z( op1           );
+                    COND_SET_FLAG_N( op1 >>> 8     );
+                    COND_SET_FLAG_V( op1 & 0x10000 );
+                    break;
+                case 0x9E:
+                    instruction_mnemonic = "LDS D";
+                    instruction_description = "(6800) Load SP <= M(direct)";
+                    SP = readWord( get_direct_addr() );
+                    COND_SET_FLAG_N( SP >>> 8 );
+                    COND_SET_FLAG_Z( SP       );
+                    CLR_FLAG( VF );
+                    break;
+                case 0x9F:
+                    instruction_mnemonic = "STS D";
+                    instruction_description = "(6800) Store M(direct) <= SP";
+                    writeWord( get_direct_addr(), SP );
+                    COND_SET_FLAG_N( SP >>> 8 );
+                    COND_SET_FLAG_Z( SP       );
+                    CLR_FLAG( VF );
+                    break;
+                case 0xA0:
+                    instruction_mnemonic = "SUB A X";
+                    instruction_description = "(6800) A <= A - M(indexed)";
+                    op1 = get_indexed_data();
+                    res = A - op1;
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    A = res & 0xFF;
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_N( A );
+                    break;
+                case 0xA1:
+                    instruction_mnemonic = "CMP A X";
+                    instruction_description = "(6800) Compare A - M(indexed)";
+                    op1 = get_indexed_data();
+                    res = A - op1;
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    COND_SET_FLAG_Z( res & 0xFF );
+                    COND_SET_FLAG_N( res & 0xFF );
+                    break;
+                case 0xA2:
+                    instruction_mnemonic = "SBC A X";
+                    instruction_description = "(6800) A <= A - M(indexed) with carry";
+                    op1 = get_indexed_data();
+                    res = A - op1 - GET_FLAG( CF );
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    A = res & 0xFF;
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_N( A );
+                    break;
+                case 0xA4:
+                    instruction_mnemonic = "AND A X";
+                    instruction_description = "(6800) A <= A and M(indexed)";
+                    A = (A & get_indexed_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0xA5:
+                    instruction_mnemonic = "BIT A X";
+                    instruction_description = "(6800) Bit test A and M(indexed)";
+                    lo = (A & get_indexed_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    break;
+                case 0xA6:
+                    instruction_mnemonic = "LDA A X";
+                    instruction_description = "(6800) Load A <= M(indexed)";
+                    A = get_indexed_data();
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0xA7:
+                    instruction_mnemonic = "STA A X";
+                    instruction_description = "(6800) Store M(indexed) <= A";
+                    writeByte( get_indexed_addr(), A );
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0xA8:
+                    instruction_mnemonic = "EOR A X";
+                    instruction_description = "(6800) A <= A xor M(indexed)";
+                    A = (A ^ get_indexed_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0xA9:
+                    instruction_mnemonic = "ADC A X";
+                    instruction_description = "(6800) A <= A + M(indexed) with carry";
+                    op1 = get_indexed_data();
+                    res = A + op1 + GET_FLAG( CF );
+                    COND_SET_FLAG_H( (A ^ op1 ^ res) & 0x10 );
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    A = res & 0xFF;
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_N( A );
+                    break;
+                case 0xAA:
+                    instruction_mnemonic = "ORA A X";
+                    instruction_description = "(6800) A <= A or M(indexed)";
+                    A = (A | get_indexed_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0xAB:
+                    instruction_mnemonic = "ADD A X";
+                    instruction_description = "(6800) A <= A + M(indexed)";
+                    op1 = get_indexed_data();
+                    res = A + op1;
+                    COND_SET_FLAG_H( (A ^ op1 ^ res) & 0x10 );
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    A = res & 0xFF;
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_N( A );
+                    break;
+                case 0xAC:
+                    instruction_mnemonic = "CPX X";
+                    instruction_description = "(6800) Compare IX - M(indexed)";
+                    op1 = (IX - get_indexed_addr()) & ADDR_MASK;
+                    COND_SET_FLAG_Z( op1           );
+                    COND_SET_FLAG_N( op1 >>> 8     );
+                    COND_SET_FLAG_V( op1 & 0x10000 );
+                    break;
+                case 0xAD:
+                    instruction_mnemonic = "JSR X";
+                    instruction_description = "(6800) Jump to indexed address";
+                    DAR = get_indexed_addr();
+                    push_word( PC );
+                    PC = DAR;
+                    break;
+                case 0xAE:
+                    instruction_mnemonic = "LDS X";
+                    instruction_description = "(6800) Load SP <= M(indexed)";
+                    SP = readWord( get_indexed_addr() );
+                    COND_SET_FLAG_N( SP >>> 8 );
+                    COND_SET_FLAG_Z( SP       );
+                    CLR_FLAG( VF );
+                    break;
+                case 0xAF:
+                    instruction_mnemonic = "STS X";
+                    instruction_description = "(6800) Store M(indexed) <= SP";
+                    writeWord( get_indexed_addr(), SP );
+                    COND_SET_FLAG_N( SP >>> 8 );
+                    COND_SET_FLAG_Z( SP       );
+                    CLR_FLAG( VF );
+                    break;
+                case 0xB0:
+                    instruction_mnemonic = "SUB A";
+                    instruction_description = "(6800) A <= A - M(extended)";
+                    op1 = get_extended_data();
+                    res = A - op1;
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    A = res & 0xFF;
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_N( A );
+                    break;
+                case 0xB1:
+                    instruction_mnemonic = "CMP A";
+                    instruction_description = "(6800) Compare A - M(extended)";
+                    op1 = get_extended_data();
+                    res = A - op1;
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    COND_SET_FLAG_Z( res & 0xFF );
+                    COND_SET_FLAG_N( res & 0xFF );
+                    break;
+                case 0xB2:
+                    instruction_mnemonic = "SBC A";
+                    instruction_description = "(6800) A <= A - M(extended) with carry";
+                    op1 = get_extended_data();
+                    res = A - op1 - GET_FLAG( CF );
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    A = res & 0xFF;
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_N( A );
+                    break;
+                case 0xB4:
+                    instruction_mnemonic = "AND A";
+                    instruction_description = "(6800) A <= A and M(extended)";
+                    A = (A & get_extended_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0xB5:
+                    instruction_mnemonic = "BIT A";
+                    instruction_description = "(6800) Bit test A and M(extended)";
+                    lo = (A & get_extended_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    break;
+                case 0xB6:
+                    instruction_mnemonic = "LDA A";
+                    instruction_description = "(6800) Load A <= M(extended)";
+                    A = get_extended_data();
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0xB7:
+                    instruction_mnemonic = "STA A";
+                    instruction_description = "(6800) Store M(extended) <= A";
+                    writeByte( get_extended_addr(), A );
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0xB8:
+                    instruction_mnemonic = "EOR A";
+                    instruction_description = "(6800) A <= A xor M(extended)";
+                    A = (A ^ get_extended_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0xB9:
+                    instruction_mnemonic = "ADC A";
+                    instruction_description = "(6800) A <= A + M(extended) with carry";
+                    op1 = get_extended_data();
+                    res = A + op1 + GET_FLAG( CF );
+                    COND_SET_FLAG_H( (A ^ op1 ^ res) & 0x10 );
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    A = res & 0xFF;
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_N( A );
+                    break;
+                case 0xBA:
+                    instruction_mnemonic = "ORA A";
+                    instruction_description = "(6800) A <= A or M(extended)";
+                    A = (A | get_extended_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( A );
+                    COND_SET_FLAG_Z( A );
+                    break;
+                case 0xBB:
+                    instruction_mnemonic = "ADD A";
+                    instruction_description = "(6800) A <= A + M(extended)";
+                    op1 = get_extended_data();
+                    res = A + op1;
+                    COND_SET_FLAG_H( (A ^ op1 ^ res) & 0x10 );
+                    COND_SET_FLAG_V( (A ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    A = res & 0xFF;
+                    COND_SET_FLAG_Z( A );
+                    COND_SET_FLAG_N( A );
+                    break;
+                case 0xBC:
+                    instruction_mnemonic = "CPX";
+                    instruction_description = "(6800) Compare IX - M(extended)";
+                    op1 = (IX - readWord( get_extended_addr() ) ); // & ADDR_MASK;
+                    COND_SET_FLAG_Z( op1           );
+                    COND_SET_FLAG_N( op1 >>> 8     );
+                    COND_SET_FLAG_V( op1 & 0x10000 );
+                    break;
+                case 0xBD:
+                    instruction_mnemonic = "JSR";
+                    instruction_description = "(6800) Jump to extended address";
+                    DAR = get_extended_addr();
+                    push_word( PC );
+                    PC = DAR;
+                    break;
+                case 0xBE:
+                    instruction_mnemonic = "LDS";
+                    instruction_description = "(6800) Load SP <= M(extended)";
+                    SP = readWord( get_extended_addr() );
+                    COND_SET_FLAG_N( SP >>> 8 );
+                    COND_SET_FLAG_Z( SP       );
+                    CLR_FLAG( VF );
+                    break;
+                case 0xBF:
+                    instruction_mnemonic = "STS";
+                    instruction_description = "(6800) Store M(extended) <= SP";
+                    writeWord( get_extended_addr(), SP );
+                    COND_SET_FLAG_N( SP >>> 8 );
+                    COND_SET_FLAG_Z( SP       );
+                    CLR_FLAG( VF );
+                    break;
+                case 0xC0:
+                    instruction_mnemonic = "SUB B I";
+                    instruction_description = "(6800) B <= B - immediate (8-bit)";
+                    op1 = fetch_byte();
+                    res = B - op1;
+                    COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    B = res & 0xFF;
+                    COND_SET_FLAG_Z( B );
+                    COND_SET_FLAG_N( B );
+                    break;
+                case 0xC1:
+                    instruction_mnemonic = "CMP B I";
+                    instruction_description = "(6800) Compare B - immediate (8-bit)";
+                    op1 = fetch_byte();
+                    res = B - op1;
+                    COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    COND_SET_FLAG_Z( res & 0xFF );
+                    COND_SET_FLAG_N( res & 0xFF );
+                    break;
+                case 0xC2:
+                    instruction_mnemonic = "SBC B I";
+                    instruction_description = "(6800) B <= B - immediate (8-bit) with carry";
+                    op1 = fetch_byte();
+                    res = B - op1 - GET_FLAG( CF );
+                    COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    B = res & 0xFF;
+                    COND_SET_FLAG_Z( B );
+                    COND_SET_FLAG_N( B );
+                    break;
+                case 0xC4:
+                    instruction_mnemonic = "AND B I";
+                    instruction_description = "(6800) B <= B and immediate (8-bit)";
+                    B = (B & fetch_byte()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0xC5:
+                    instruction_mnemonic = "BIT B I";
+                    instruction_description = "(6800) Bit test B and immediate (8-bit)";
+                    lo = (B & fetch_byte()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    break;
+                case 0xC6:
+                    instruction_mnemonic = "LDA B I";
+                    instruction_description = "(6800) Load B <= immediate (8-bit)";
+                    B = fetch_byte();
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0xC8:
+                    instruction_mnemonic = "EOR B I";
+                    instruction_description = "(6800) B <= B xor immediate (8-bit)";
+                    B = (B ^ fetch_byte()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0xC9:
+                    instruction_mnemonic = "ADC B I";
+                    instruction_description = "(6800) B <= B + immediate (8-bit)";
+                    op1 = fetch_byte();
+                    res = B + op1 + GET_FLAG( CF );
+                    COND_SET_FLAG_H( (B ^ op1 ^ res) & 0x10 );
+                    COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    B = res & 0xFF;
+                    COND_SET_FLAG_Z( B );
+                    COND_SET_FLAG_N( B );
+                    break;
+                case 0xCA:
+                    instruction_mnemonic = "ORA B I";
+                    instruction_description = "(6800) B <= B or immediate (8-bit)";
+                    B = (B | fetch_byte()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0xCB:
+                    instruction_mnemonic = "ADD B I";
+                    instruction_description = "(6800) B <= B + immediate (8-bit)";
+                    op1 = fetch_byte();
+                    res = B + op1;
+                    COND_SET_FLAG_H( (B ^ op1 ^ res) & 0x10 );
+                    COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    B = res & 0xFF;
+                    COND_SET_FLAG_Z( B );
+                    COND_SET_FLAG_N( B );
+                    break;
+                case 0xCC:
+                    instruction_mnemonic = "ADAX";
+                    instruction_description = "(TekExtended) Add A to IX?";
+                    i = 0;
+                    break;
+                case 0xCD:
+                    instruction_mnemonic = "WADAX";
+                    instruction_description = "(TekExtended) Wide Add A to IX?";
+                    i = 0;
+                    break;
+                case 0xCE:
+                    instruction_mnemonic = "LDX I";
+                    instruction_description = "(6800) Load IX <= immediate (16-bit)";
+                    IX = fetch_word();
+                    COND_SET_FLAG_N( IX >>> 8 );
+                    COND_SET_FLAG_Z( IX       );
+                    CLR_FLAG( VF );
+                    break;
+                case 0xD0:
+                    instruction_mnemonic = "SUB B D";
+                    instruction_description = "(6800) B <= B - M(direct)";
+                    op1 = get_direct_data();
+                    res = B - op1;
+                    COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    B = res & 0xFF;
+                    COND_SET_FLAG_Z( B );
+                    COND_SET_FLAG_N( B );
+                    break;
+                case 0xD1:
+                    instruction_mnemonic = "CMP B D";
+                    instruction_description = "(6800) Compare B - M(direct)";
+                    op1 = get_direct_data();
+                    res = B - op1;
+                    COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    COND_SET_FLAG_Z( res & 0xFF );
+                    COND_SET_FLAG_N( res & 0xFF );
+                    break;
+                case 0xD2:
+                    instruction_mnemonic = "SBC B D";
+                    instruction_description = "(6800) B <= B - M(direct) with carry";
+                    op1 = get_direct_data();
+                    res = B - op1 - GET_FLAG( CF );
+                    COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    B = res & 0xFF;
+                    COND_SET_FLAG_Z( B );
+                    COND_SET_FLAG_N( B );
+                    break;
+                case 0xD4:
+                    instruction_mnemonic = "AND B D";
+                    instruction_description = "(6800) B <= B and M(direct)";
+                    B = (B & get_direct_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0xD5:
+                    instruction_mnemonic = "BIT B D";
+                    instruction_description = "(6800) Bit test B and M(direct)";
+                    lo = (B & get_direct_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    break;
+                case 0xD6:
+                    instruction_mnemonic = "LDA B D";
+                    instruction_description = "(6800) Load B <= M(direct)";
+                    B = get_direct_data();
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0xD7:
+                    instruction_mnemonic = "STA B D";
+                    instruction_description = "(6800) Store M(direct) <= B";
+                    writeByte( get_direct_addr(), B );
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0xD8:
+                    instruction_mnemonic = "EOR B D";
+                    instruction_description = "(6800) B <= B xor M(direct)";
+                    B = (B ^ get_direct_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0xD9:
+                    instruction_mnemonic = "ADC B D";
+                    instruction_description = "(6800) B <= B + M(direct) with carry";
+                    op1 = get_direct_data();
+                    res = B + op1 + GET_FLAG( CF );
+                    COND_SET_FLAG_H( (B ^ op1 ^ res) & 0x10 );
+                    COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    B = res & 0xFF;
+                    COND_SET_FLAG_Z( B );
+                    COND_SET_FLAG_N( B );
+                    break;
+                case 0xDA:
+                    instruction_mnemonic = "ORA B D";
+                    instruction_description = "(6800) B <= B or M(direct)";
+                    B = (B | get_direct_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0xDB:
+                    instruction_mnemonic = "ADD B D";
+                    instruction_description = "(6800) B <= B + M(direct)";
+                    op1 = get_direct_data();
+                    res = B + op1;
+                    COND_SET_FLAG_H( (B ^ op1 ^ res) & 0x10 );
+                    COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    B = res & 0xFF;
+                    COND_SET_FLAG_Z( B );
+                    COND_SET_FLAG_N( B );
+                    break;
+                case 0xDC:
+                    instruction_mnemonic = "SBUG";
+                    instruction_description = "(TekExtended) Software Bug?";
+                    i = 0;
+                    break;
+                case 0xDD:
+                    instruction_mnemonic = "CBUG";
+                    instruction_description = "(TekExtended) C Bug?";
+                    i = 0;
+                    break;
+                case 0xDE:
+                    instruction_mnemonic = "LDX D";
+                    instruction_description = "(6800) Load IX <= M(direct)";
+                    IX = readWord( get_direct_addr() );
+                    COND_SET_FLAG_N( IX >>> 8 );
+                    COND_SET_FLAG_Z( IX       );
+                    CLR_FLAG( VF );
+                    break;
+                case 0xDF:
+                    instruction_mnemonic = "STX D";
+                    instruction_description = "(6800) Store M(direct) <= IX";
+                    writeWord( get_direct_addr(), IX );
+                    COND_SET_FLAG_N( IX >>> 8 );
+                    COND_SET_FLAG_Z( IX       );
+                    CLR_FLAG( VF );
+                    break;
+                case 0xE0:
+                    instruction_mnemonic = "SUB B X";
+                    instruction_description = "(6800) B <= B - M(indexed)";
+                    op1 = get_indexed_data();
+                    res = B - op1;
+                    COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    B = res & 0xFF;
+                    COND_SET_FLAG_Z( B );
+                    COND_SET_FLAG_N( B );
+                    break;
+                case 0xE1:
+                    instruction_mnemonic = "CMP B X";
+                    instruction_description = "(6800) Compare B - M(indexed)";
+                    op1 = get_indexed_data();
+                    res = B - op1;
+                    COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    COND_SET_FLAG_Z( res & 0xFF );
+                    COND_SET_FLAG_N( res & 0xFF );
+                    break;
+                case 0xE2:
+                    instruction_mnemonic = "SBC B X";
+                    instruction_description = "(6800) B <= B - M(indexed) with carry";
+                    op1 = get_indexed_data();
+                    res = B - op1 - GET_FLAG( CF );
+                    COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    B = res & 0xFF;
+                    COND_SET_FLAG_Z( B );
+                    COND_SET_FLAG_N( B );
+                    break;
+                case 0xE3:
+                    instruction_mnemonic = "MVLR";
+                    instruction_description = "(TekExtended) ???";
+                    i = 0;
+                    break;
+                case 0xE4:
+                    instruction_mnemonic = "AND B X";
+                    instruction_description = "(6800) B <= B and M(indexed)";
+                    B = (B & get_indexed_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0xE5:
+                    instruction_mnemonic = "BIT B X";
+                    instruction_description = "(6800) Bit test B and M(indexed)";
+                    lo = (B & get_indexed_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    break;
+                case 0xE6:
+                    instruction_mnemonic = "LDA B X";
+                    instruction_description = "(6800) Load B <= M(indexed)";
+                    B = get_indexed_data();
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0xE7:
+                    instruction_mnemonic = "STA B X";
+                    instruction_description = "(6800) Store M(indexed) <= B";
+                    writeByte( get_indexed_addr(), B );
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0xE8:
+                    instruction_mnemonic = "EOR B X";
+                    instruction_description = "(6800) B <= B xor M(indexed)";
+                    B = (B ^ get_indexed_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0xE9:
+                    instruction_mnemonic = "ADC B X";
+                    instruction_description = "(6800) B <= B + M(indexed) with carry";
+                    op1 = get_indexed_data();
+                    res = B + op1 + GET_FLAG( CF );
+                    COND_SET_FLAG_H( (B ^ op1 ^ res) & 0x10 );
+                    COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    B = res & 0xFF;
+                    COND_SET_FLAG_Z( B );
+                    COND_SET_FLAG_N( B );
+                    break;
+                case 0xEA:
+                    instruction_mnemonic = "ORA B X";
+                    instruction_description = "(6800) B <= B or M(indexed)";
+                    B = (B | get_indexed_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0xEB:
+                    instruction_mnemonic = "ADD B X";
+                    instruction_description = "(6800) B <= B + M(indexed)";
+                    op1 = get_indexed_data();
+                    res = B + op1;
+                    COND_SET_FLAG_H( (B ^ op1 ^ res) & 0x10 );
+                    COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    B = res & 0xFF;
+                    COND_SET_FLAG_Z( B );
+                    COND_SET_FLAG_N( B );
+                    break;
+                case 0xEC:
+                    instruction_mnemonic = "MVRL";
+                    instruction_description = "(TekExtended) ???";
+                    i = 0;
+                    break;
+                case 0xED:
+                    instruction_mnemonic = "WADX";
+                    instruction_description = "(TekExtended) ??? Extended";
+                    i = 0;
+                    break;
+                case 0xEE:
+                    instruction_mnemonic = "LDX X";
+                    instruction_description = "(6800) Load IX <= M(indexed)";
+                    IX = readWord( get_indexed_addr() );
+                    COND_SET_FLAG_N( IX >>> 8 );
+                    COND_SET_FLAG_Z( IX       );
+                    CLR_FLAG( VF );
+                    break;
+                case 0xEF:
+                    instruction_mnemonic = "STX X";
+                    instruction_description = "(6800) Store M(indexed) <= IX";
+                    writeWord( get_indexed_addr(), IX );
+                    COND_SET_FLAG_N( IX >>> 8 );
+                    COND_SET_FLAG_Z( IX       );
+                    CLR_FLAG( VF );
+                    break;
+                case 0xF0:
+                    instruction_mnemonic = "SUB B";
+                    instruction_description = "(6800) B <= B - M(extended)";
+                    op1 = get_extended_data();
+                    res = B - op1;
+                    COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    B = res & 0xFF;
+                    COND_SET_FLAG_Z( B );
+                    COND_SET_FLAG_N( B );
+                    break;
+                case 0xF1:
+                    instruction_mnemonic = "CMP B";
+                    instruction_description = "(6800) Compare B - M(extended)";
+                    op1 = get_extended_data();
+                    res = B - op1;
+                    COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    COND_SET_FLAG_Z( res & 0xFF );
+                    COND_SET_FLAG_N( res & 0xFF );
+                    break;
+                case 0xF2:
+                    instruction_mnemonic = "SBC B";
+                    instruction_description = "(6800) B <= B - M(extended) with carry";
+                    op1 = get_extended_data();
+                    res = B - op1 - GET_FLAG( CF );
+                    COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    B = res & 0xFF;
+                    COND_SET_FLAG_Z( B );
+                    COND_SET_FLAG_N( B );
+                    break;
+                case 0xF3:
+                    instruction_mnemonic = "CPCH";
+                    instruction_description = "(TekExtended) ??? Immediate";
+                    i = 0;
+                    break;
+                case 0xF4:
+                    instruction_mnemonic = "AND B";
+                    instruction_description = "(6800) B <= B and M(extended)";
+                    B = (B & get_extended_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0xF5:
+                    instruction_mnemonic = "BIT B";
+                    instruction_description = "(6800) Bit test B and M(extended)";
+                    lo = (B & get_extended_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( lo );
+                    COND_SET_FLAG_Z( lo );
+                    break;
+                case 0xF6:
+                    instruction_mnemonic = "LDA B";
+                    instruction_description = "(6800) Load B <= M(extended)";
+                    B = get_extended_data();
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0xF7:
+                    instruction_mnemonic = "STA B";
+                    instruction_description = "(6800) Store M(extended) <= B";
+                    writeByte( get_extended_addr(), B );
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0xF8:
+                    instruction_mnemonic = "EOR B";
+                    instruction_description = "(6800) B <= B xor M(extended)";
+                    B = (B ^ get_extended_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0xF9:
+                    instruction_mnemonic = "ADC B";
+                    instruction_description = "(6800) B <= B + M(extended)";
+                    op1 = get_extended_data();
+                    res = B + op1 + GET_FLAG( CF );
+                    COND_SET_FLAG_H( (B ^ op1 ^ res) & 0x10 );
+                    COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    B = res & 0xFF;
+                    COND_SET_FLAG_Z( B );
+                    COND_SET_FLAG_N( B );
+                    break;
+                case 0xFA:
+                    instruction_mnemonic = "ORA B";
+                    instruction_description = "(6800) B <= B or M(extended)";
+                    B = (B | get_extended_data()) & 0xFF;
+                    CLR_FLAG( VF );
+                    COND_SET_FLAG_N( B );
+                    COND_SET_FLAG_Z( B );
+                    break;
+                case 0xFB:
+                    instruction_mnemonic = "ADD B";
+                    instruction_description = "(6800) B <= B + M(extended)";
+                    op1 = get_extended_data();
+                    res = B + op1;
+                    COND_SET_FLAG_H( (B ^ op1 ^ res) & 0x10 );
+                    COND_SET_FLAG_V( (B ^ op1 ^ res ^ (res >>> 1)) & 0x80 );
+                    COND_SET_FLAG_C( res );
+                    B = res & 0xFF;
+                    COND_SET_FLAG_Z( B );
+                    COND_SET_FLAG_N( B );
+                    break;
+                case 0xFD:
+                    instruction_mnemonic = "PCH";
+                    instruction_description = "(TekExtended) ??? Immediate";
+                    i = 0;
+                    break;
+                case 0xFE:
+                    instruction_mnemonic = "LDX";
+                    instruction_description = "(6800) Load IX <= M(extended)";
+                    IX = readWord( get_extended_addr() );
+                    COND_SET_FLAG_N( IX >>> 8 );
+                    COND_SET_FLAG_Z( IX       );
+                    CLR_FLAG( VF );
+                    break;
+                case 0xFF:
+                    instruction_mnemonic = "STX";
+                    instruction_description = "(6800) Store M(extended) <= IX";
+                    writeWord( get_extended_addr(), IX );
+                    COND_SET_FLAG_N( IX >>> 8 );
+                    COND_SET_FLAG_Z( IX       );
+                    CLR_FLAG( VF );
+                    break;
+                default:
+                    console.log('MC6800.js illegal instruction: ' + ReturnHex( lastPC, 4 ) + " => " + ReturnHex(IR,2));
+                    this.println('MC6800.js illegal instruction: ' + this.ReturnHex( lastPC, 4 ) + " => " + this.ReturnHex(IR,2));
+                    i = 0;
+                    break;
+
+			} // End of switch IR.	
+
+*/
+            
+		} // End for loop.
+		
+		// This only logs the last instruction at the end of the execute() interval
+        if (DebugExecutePrint) {
+            console.log(ReturnHex( lastPC, 4 ) + " => " + 
+                        ReturnHex(IR,2) + " " + 
+//                        instruction_mnemonic + " " + 
+//                        instruction_operand + " " + 
+//                        instruction_description);
+                        instr[IR][2] + " " +
+                        instruction_operand + " " + 
+                        instr[IR][3]);
+
+        }
+        
+	} // End of function execute.
+	
+	
+	// -------------------------------------------------------------------------------------
+	// Miscellaneous functions
+	// -------------------------------------------------------------------------------------
+	
+    this.reset = function() {
+        A   = 0x00;
+		B   = 0x00;
+		IX  = 0x0000;
+		PC  = readWord( RESET_VECTOR );
+		SP  = 0x0000;
+		CCR = CCR_ALWAYS_ON | IF;
+    }
+
+    this.getLastPC = function() {
+        return lastPC;
+    }
+	
+	this.setIPI = function( sf ) {
+		let spdfactor = SPDF/sf; 
+		InstructionsPerInterval = (MIPS*1000000/spdfactor);
+	}
+
+	// -------------------------------------------------------------------------------------
+	// Debug helper functions
+	// -------------------------------------------------------------------------------------
+	
+    function ReturnHex( i, j ) {
+		let string = "";
+		for( var i_72_ = j-1; i_72_ >= 0; i_72_-- ) {
+	
+	    	var i_73_ = (i >>> (i_72_ * 4)) & 0xf;
+	    	switch( i_73_ ) {
+	    		case  0: string += "0"; break;
+	    		case  1: string += "1"; break;
+	    		case  2: string += "2"; break;
+	    		case  3: string += "3"; break;
+	    		case  4: string += "4"; break;
+	    		case  5: string += "5"; break;
+	    		case  6: string += "6"; break;
+	    		case  7: string += "7"; break;
+	    		case  8: string += "8"; break;
+	    		case  9: string += "9"; break;
+	    		case 10: string += "A"; break;
+	    		case 11: string += "B"; break;
+	    		case 12: string += "C"; break;
+	    		case 13: string += "D"; break;
+	    		case 14: string += "E"; break;
+	    		case 15: string += "F"; break;
+	    	}
+		}
+		return string;
+    }
+
+
+
+	
+} // End function TekCpu.
