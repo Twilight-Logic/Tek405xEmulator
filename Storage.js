@@ -49,7 +49,7 @@ class Storage {
     
 
     call(addr, gpibobj) {
-console.log("Called: ", addr);
+//console.log("Called: ", addr);
         switch(addr) {        
             case 0x61:  this.gpibSave(gpibobj); break;
             case 0x62:  this.gpibClose(); break;
@@ -101,7 +101,6 @@ console.log("Called: ", addr);
 
             let file = new tFile();
             let header = this.getFileMarkedState(filenum);
-console.log("Current file: ", this.currentTekFile);
             file.header = header;
             file.content = this.currentTekFile.content;
             this.fstore.saveFile(file);
@@ -230,12 +229,8 @@ console.log("Current file: ", this.currentTekFile);
                 let tekUploadFlg = document.getElementById('tekUploadFlg');
 
                 if (tekUploadFlg.value == "1") {  // Uploading from file directly to Tek?
-//console.log("EV target data: ", ev.target.result);
                     let buffer = new Uint8Array(ev.target.result);
                     storageObj.gpibSendBuffer = buffer;
-//console.log("Bufdata: ", buffer);
-//                    upload_to_tek(ev.target.result);
-//                    tek.signalProgLoaded();
                     tekUploadFlg.value = 0; 
                 }else{  // Load into content buffer and storage
                     // Sanity check: is it a 405x Flash Drive file?
@@ -491,7 +486,6 @@ console.log("Current file: ", this.currentTekFile);
     // File export handler
     exportFile(filename, contentType) {
         let fnum = parseInt(this.getCurrentFileNum());
-        console.log("File content: ",this.fstore.getContent(fnum));
         const file = new Blob([this.fstore.getContent(fnum)],{type: contentType});
         this.performExport(filename,file);        
     }
@@ -859,13 +853,9 @@ console.log("Current file: ", this.currentTekFile);
             dtype = 0;
         }
 
-console.log("Dsend: ", dsend);
-
         if (dsend === true) {
 
             let sendstr = dtype.toString() + String.fromCharCode(13) + dsize.toString() + String.fromCharCode(13);
-
-console.log("Sendstr: ", sendstr);
 
             gpibobj.inputBufferFromStr = { strtosend: sendstr, eoi: 1 };
         
@@ -1082,11 +1072,9 @@ console.log("Sendstr: ", sendstr);
         }else{  // Controller wants me to listen (LIST write entry)
 
             let newname = String.fromCharCode(...gpibobj.outputBuffer);
-//console.log("New name: ", newname);           
             let flashNameHandler = new flashFilenameHandler(newname);
             // Must be valid format for marked file
             if (flashNameHandler.isValidFlashName()) {
-//                this.fstore.delFile(this.currentTekFile.fnum);
                 this.currentTekFile.header = flashNameHandler.header;
                 this.fstore.saveFile(this.currentTekFile);
                 this.updateCtrlsFromFile(this.currentTekFile);

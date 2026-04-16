@@ -108,12 +108,6 @@ console.log("EOI: ", eoisig);
     }
 
 
-//    set send(buffer){
-//        this.#outBuffer = buffer;        
-//    }
-
-
-
     set inputBuffer(data) {
         this.#inBuffer = data.buffer;  // data = Uint8Array
         this.#eoisig = data.eoi;
@@ -254,23 +248,7 @@ console.log("EOI: ", eoisig);
         let regdevobj = document.getElementById('regdev');
         regdevobj.value = String(addr + ':' + devtype + ':' + devdesc);
         regdevobj.onchange();
-        
-        
-// console.log("Addr: ", addr, "Devtype: ", devtype, "Devdesc: ", devdesc);
 
-/*        
-        switch(devtype) {
-            case 'L':
-                this.register(addr, new this.#loader(), devdesc);
-                break;
-            case 'R':
-                this.register(addr, new this.#rtc(), devdesc);
-                break;            
-            case 'T':
-                this.register(addr, new this.#storage(), devdesc);
-                break;        
-        }
-*/        
         this.genDeviceList(); 
 
     }
@@ -293,11 +271,6 @@ console.log("EOI: ", eoisig);
             let line = addr + ": " + desc + "\n";
             viewer.value += line;
         }
-    }
-
-
-    updateDevSelect(){
-    
     }
 
 
