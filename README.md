@@ -7,6 +7,12 @@ and enhanced by Jon Stanley found here:
 https://github.com/jonbstanley/Tek405xEmulator
 
 
+Additions (16 Apr 2026) by Twilight Logic:
+
+- added TYPE command
+
+- removed 'experimental' folder
+
 
 Further additions by Twilight Logic (15 Oct 2021):
 
