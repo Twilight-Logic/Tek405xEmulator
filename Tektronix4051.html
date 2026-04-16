@@ -1,0 +1,654 @@
+<!doctype html>
+
+<head>
+<meta charset="UTF-8">
+<TITLE>jsTEKTRONIX4051 - A Tektronix 4051 emulator written in Javascript. Copyright (c) 2015 David E. Roberts.</TITLE>
+
+<link rel='stylesheet' href='styleSheet.css' type='text/css' charset='utf-8'>
+
+<script src="mc6800.js"        language="JavaScript"></script>
+<script src="Tek4051Rom.js"    language="JavaScript"></script>
+<script src="TekDisplay.js"    language="JavaScript"></script>
+<script src="TekKeyboard.js"   language="JavaScript"></script>
+<script src="TEKTRONIX4051.js" language="JavaScript"></script>
+<script src="Storage.js"       language="JavaScript"></script>
+<script src="JSZip.js"         language="JavaScript"></script>
+<script src="RomExp.js"        language="JavaScript"></script>
+
+
+<script src="RTC.js"         language="JavaScript"></script>
+<script src="Loader.js"      language="JavaScript"></script>
+<script src="GPIB.js"        language="JavaScript"></script>
+<script src="Printer.js"     language="JavaScript"></script>
+
+
+<script type="text/javascript">
+        // Prompt before leaving window or closing tab to serve as a reminder to save data
+        // Unfortunately e.returnvalue cannot display a custom prompt
+        window.addEventListener('beforeunload', function (e) {
+            e.preventDefault();
+            e.returnValue = '';
+        });
+</script>
+
+
+</head>
+
+<body onload="tek_init();updateScale();" onresize="updateScale()">
+
+
+<div id="container">
+
+    <div class="scaling">
+        <input id="tscaling" class="side-menu-content" onClick="toggleScaling();" title="Auto-Scaling (on/off)" value="&#8690;" type="button">
+    </div>
+    <div class="cpuspeed">
+        <input id="cpuspeed" class="side-menu-content" onClick="toggleCPUspeed();" title="Speed factor" value="&#9736;" type="button">
+    </div>
+    <div class="cpuspeedval">
+        <input id="cpuspeedval" class="cpuspeedval" onClick="toggleCPUspeed();" value="x1" type="button">
+    </div>
+    <div class="pixelsize">
+        <input id="pixelsize" class="side-menu-content" onClick="toggleDisplayGranularity();" title="Pixel size (fine/course/mixed)" value="&#8858;" type="button">
+    </div>
+
+    <div class="inline">
+        <!-- NOTE: Canvas size set here is used by emulator for pixel locations, but is scaled down in CSS -->
+        <canvas id="screen" name="screen" width="1046" height="830"> </canvas>
+    </div>
+
+    <div class="inline">
+        <div class="status" id="status_busy">BUSY</div>
+        <div class="status" id="status_break">BREAK</div>
+        <div class="status" id="status_io">I/O</div>
+        <div class="status" id="status_power">POWER</div>
+    </div>
+
+    <div id="keyboard">
+
+        <div class="inlinekeys">
+            <table class="keys">
+            <tr><td>11</td><td>12</td><td>13</td><td>14</td><td>15</td></tr>
+            <tr>
+            <td><div class="key" onmousedown="tek.fcnkey_press(0x0060);"             
+                             onmouseup="tek.fcnkey_release(0x0060);" /></td>
+            <td><div class="key" onmousedown="tek.fcnkey_press(0x0061);"             
+                             onmouseup="tek.fcnkey_release(0x0061);" /></td>
+            <td><div class="key" onmousedown="tek.fcnkey_press(0x0062);"             
+                             onmouseup="tek.fcnkey_release(0x0062);" /></td>
+            <td><div class="key" onmousedown="tek.fcnkey_press(0x0063);"             
+                             onmouseup="tek.fcnkey_release(0x0063);" /></td>
+            <td><div class="key" onmousedown="tek.fcnkey_press(0x0064);"             
+                             onmouseup="tek.fcnkey_release(0x0064);" /></td></tr>
+            <tr><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td></tr>
+            <tr><td colspan="5"><div class="centerline"><div><span>USER DEFINABLE</span></div></div></td></tr>
+            <tr><td>16</td><td>17</td><td>18</td><td>19</td><td>20</td></tr>
+            <tr>
+            <td><div class="key" onmousedown="tek.fcnkey_press(0x0065);" 
+                             onmouseup="tek.fcnkey_release(0x0065);" /></td>
+            <td><div class="key" onmousedown="tek.fcnkey_press(0x0066);" 
+                             onmouseup="tek.fcnkey_release(0x0066);" /></td>
+            <td><div class="key" onmousedown="tek.fcnkey_press(0x0067);" 
+                             onmouseup="tek.fcnkey_release(0x0067);" /></td>
+            <td><div class="key" onmousedown="tek.fcnkey_press(0x0068);" 
+                             onmouseup="tek.fcnkey_release(0x0068);" /></td>
+            <td><div class="key" onmousedown="tek.fcnkey_press(0x0069);" 
+                             onmouseup="tek.fcnkey_release(0x0069);" /></td></tr>
+            <tr><td>6</td><td>7</td><td>8</td><td>9</td><td>10</td></tr>
+            </table>
+        </div>
+    
+        <div class="inlinekeys">
+            <table class="keys">
+            <tr><td class="wider">COMPRESS</td><td class="wider">RUB OUT<br>&larr;</td><td class="wider">RUB OUT<br>&rarr;</td>
+            <td class="wider">REPRINT</td><td class="wider">RECALL<br>NEXT LINE</td><td></td><td></td></tr>
+            <tr>
+            <td><div class="key" onmousedown="tek.fcnkey_press(0x0070);" 
+                             onmouseup="tek.fcnkey_release(0x0070);" /></td>
+            <td><div class="key" onmousedown="tek.fcnkey_press(0x0071);" 
+                             onmouseup="tek.fcnkey_release(0x0071);" /></td>
+            <td><div class="key" onmousedown="tek.fcnkey_press(0x0072);" 
+                             onmouseup="tek.fcnkey_release(0x0072);" /></td>
+            <td><div class="key" onmousedown="tek.fcnkey_press(0x0073);" 
+                             onmouseup="tek.fcnkey_release(0x0073);" /></td>
+            <td><div class="key" onmousedown="tek.fcnkey_press(0x0074);"
+                             onmouseup="tek.fcnkey_release(0x0074);" /></td>
+            <tr><td class="wider">EXPAND</td><td class="wider">BACK<br>SPACE</td><td class="wider">SPACE</td>
+                <td class="wider">CLEAR</td><td class="wider">RECALL<br>LINE</td></tr>
+            <tr><td colspan="5"><div class="centerline"><div><span>LINE EDITOR</span></div></div></td></tr>
+            </table>
+        </div>
+    
+        <div class="inlinekeys">
+            <table class="keys">
+            <tr>
+            <td><div class="key" onmousedown="tek.fcnkey_press(0x0075);"
+                             onmouseup="tek.fcnkey_release(0x0075);" /></td>
+            <td><div class="key" onmousedown="tek.fcnkey_press(0x0076);" 
+                             onmouseup="tek.fcnkey_release(0x0076);" /></td>
+            <td><div class="key" onmousedown="tek.execute_copy();" /></td></tr>
+            <tr><td class="wider">AUTO<br>NUMBER</td><td class="wider">STEP<br>PROGRAM</td><td class="wider">MAKE<br>COPY</td></tr>
+            <tr><td colspan="3"><div class="centerline"><div><span>&#8249;&#8250;</span></div></div></td></tr>
+            <tr>
+            <td></td>
+            <td><div class="key" onmousedown="tek.autoload();"/></td>
+            <td></tr>
+            <tr><td class="wider"></td><td class="wider">AUTO<br>LOAD</td><td class="wider"></td></tr>			
+		    </table>
+        </div>
+
+    </div>
+
+<br>
+    <div class="inline">
+        <div>
+            <table class="keys"><tr>
+            <td><div class="kbkey" onmousedown="tek.fcnkey_press(0x006A);" 
+                             onmouseup="tek.fcnkey_release(0x006A);">HOME<br>PAGE</div></td>
+            <td><div class="kbkey" onmousedown="tek.fcnkey_press(0x005E);" 
+                             onmouseup="tek.fcnkey_release(0x005E);">~<br>^</div></td>
+		    <td><div class="kbkeylight" onmousedown="tek.fcnkey_press(0x0031);" 
+                             onmouseup="tek.fcnkey_release(0x0031);">!<br>1</div></td>
+		    <td><div class="kbkeylight" onmousedown="tek.fcnkey_press(0x0032);" 
+                             onmouseup="tek.fcnkey_release(0x0032);">"<br>2</div></td>
+		    <td><div class="kbkeylight" onmousedown="tek.fcnkey_press(0x0033);" 
+                             onmouseup="tek.fcnkey_release(0x0033);">#<br>3</div></td>
+		    <td><div class="kbkeylight" onmousedown="tek.fcnkey_press(0x0034);" 
+                             onmouseup="tek.fcnkey_release(0x0034);">$<br>4</div></td>
+		    <td><div class="kbkeylight" onmousedown="tek.fcnkey_press(0x0035);" 
+                             onmouseup="tek.fcnkey_release(0x0035);">%<br>5</div></td>
+		    <td><div class="kbkeylight" onmousedown="tek.fcnkey_press(0x0036);" 
+                             onmouseup="tek.fcnkey_release(0x0036);">&<br>6</div></td>
+		    <td><div class="kbkeylight" onmousedown="tek.fcnkey_press(0x0037);" 
+                             onmouseup="tek.fcnkey_release(0x0037);">'<br>7</div></td>
+		    <td><div class="kbkeylight" onmousedown="tek.fcnkey_press(0x0038);" 
+                             onmouseup="tek.fcnkey_release(0x0038);">(<br>8</div></td>
+		    <td><div class="kbkeylight" onmousedown="tek.fcnkey_press(0x0039);" 
+                             onmouseup="tek.fcnkey_release(0x0039);">)<br>9</div></td>
+		    <td><div class="kbkeylight" onmousedown="tek.fcnkey_press(0x0030);" 
+                             onmouseup="tek.fcnkey_release(0x0030);">0</div></td>
+		    <td><div class="kbkeylight" onmousedown="tek.fcnkey_press(0x00C0);" 
+                             onmouseup="tek.fcnkey_release(0x00C0);">`<br>@</div></td>
+		    <td><div class="kbkeylight" onmousedown="tek.fcnkey_press(0x003A);" 
+                             onmouseup="tek.fcnkey_release(0x003A);">*<br>:</div></td>
+		    <td><div class="kbkeylight" onmousedown="tek.fcnkey_press(0x003B);" 
+                             onmouseup="tek.fcnkey_release(0x003B);">+<br>;</div></td>
+		    <td><div class="kbkeylight" onmousedown="tek.fcnkey_press(0x003D);" 
+                             onmouseup="tek.fcnkey_release(0x003D);">=<br>-</div></td>
+		    <td><div class="kbkey" onmousedown="tek.fcnkey_press(0x005F);"
+                             onmouseup="tek.fcnkey_release(0x005F);">RUB<br>OUT</div></td>
+		    <td><div class="kbkeybreak" onmousedown="tek.fcnkey_press(0x006B);" 
+                             onmouseup="tek.fcnkey_release(0x006B);">BREAK</div></td></tr>
+		    <tr><td colspan="18"><div class="centerline"><div><span>Tektronix Keys</span></div></div></td></tr>
+
+            <tr><td colspan="18"><br>
+                <input id="start" class="mainbtn" value="▶ start" onclick="javascript:tek_start();" type="button">
+                <input id="stop"  class="mainbtn" value="▣ pause" disabled="true" onclick="javascript:tek_stop();" type="button">
+                <input id="reset" class="mainbtn" value="⎌ reset" onclick="javascript:tek_reset();" type="button">
+                <input id="mutespkr" class="mainbtn" value="♫ mute" onClick="toggleAudioStatus();" type="button" >
+                <input id="gpibdlg" class="mainbtn" value="⋲ gpib" disabled="true" onClick="gpib.showGpibDialog();" type="button" >
+                <input id="storagedlg" class="mainbtn" value="🖭 storage" disabled="true" onClick="storage.showStorageDialog();" type="button" >
+            </td>
+
+            </tr></table>
+        </div>
+
+    </div>
+
+
+    <div id="storageDialog" class="popup" hidden="true">
+        <p><b>File information:</b></p>
+        <div id="fileInfoCtrls">
+            Select: <select id="fileList" class="dlgstyle1" onchange="storage.loadFile();"></select>&emsp;
+            Type: <select id="fileType" class="dlgstyle1" onchange="storage.changeType();">
+                    <option value="">None</option>
+                    <option value="A">Ascii</option>
+                    <option value="B">Binary</option>
+                    <option value="N">New</option>
+                    <option value="L">Last</option>
+                </select>&emsp;
+            Usage: <select id="fileUsage" class="dlgstyle1" onchange="storage.changeUsage();">
+                    <option value="">None</option>
+                    <option value="P">Program</option>
+                    <option value="D">Data</option>
+                    <option value="L">Log</option>
+                    <option value="T">Text</option>
+                  </select>&emsp;
+            Size: <input type="text" id="fileSize" class="dlgstyle1" disabled></input>&emsp;
+            GPIB: <select id="deviceAddr" class="dlgstyle1" onchange="storage=storageSelect(gpib,this);"></select>
+        </div>
+
+        <div id="fileWindow">
+            <p><b>File content viewer:</b>&emsp;[<SPAN id="fname">Drop a file to this window</SPAN>]</p>
+            <p>
+            <textarea id="fileViewer" rows="25" cols="74" ondrop="storage.dropHandler(event, storage);" ondragover="storage.dragOverHandler(event);" readonly></textarea><BR>
+            </p>
+        </div>
+
+        <div id="dlgbtns1">
+            <input type="button" class="popupbtn" value="Save" onClick="storage.saveFile();"></input>
+            <input type="button" class="popupbtn" value="Clear" onClick="storage.clearCurrentFile();"></input>
+            <input type="button" class="popupbtn" value="DelFile" onClick="storage.deleteFile();"></input>
+            <input type="button" class="popupbtn" value="DelALL" onClick="storage.deleteAll();"></input>
+            <input type="button" class="popupbtn" value="Array" onClick="storage.showArray();"></input>
+        </div>
+
+        <div id="savefnum">
+            F#:
+            <input type="text" class="dlgstyle1" id="fileNum"></input>
+            Desc:
+            <input type="text" class="dlgstyle1" id="fileDesc" onKeyDown="storage.fdLimit(event);"></input>
+        </div>
+
+        <div id="dlgbtns3">
+            <input type="button" class="popupbtn" value="Select" onClick="storage.selectTekFile();"></input>
+            <input type="button" class="popupbtn" value="Cancel" onClick="storage.hideStorageDialog();"></input>
+        </div>
+
+        <div id="importCtrls">
+            <input type="button" class="popupbtn" value="Export" onClick="storage.fileIOHandle(0);"></input>
+            <input type="button" class="popupbtn" value="Import" onClick="storage.fileIOHandle(1);"></input>
+            <input type="file" id="importObj" onchange="storage.importObject(storage);" hidden="true"></input>
+            <input type="text" id="tekUploadFlg" value="0" hidden="true"></input>
+            <select id="importType" class="dlgstyle1">
+	            <option>Single file</option>
+                <option>Storage Archive</option>
+	            <option>4050 Flash Drive files</option>
+            </select>
+        </div>
+
+        <div id="storageNotify" hidden="true">
+
+            <p id="storageMsg"></p>
+            <input type="button" class="messagebtn" id="notifyBtn" value="Close" onClick="clearStorageMsg();" disabled></input>
+
+        </div>
+
+    </div>
+
+
+    <div id="gpibDialog" class="popup" hidden="true">
+        <p><b>GPIB Devices</b></p>
+
+            GPIB address: <select id="gpibAddrSelect" class="dlgstyle1" onchange="gpib.updateDevSelect();">
+                </select>&emsp;
+
+            Device: <select id="gpibDevSelect" class="dlgstyle1" </select>&emsp;
+
+            <input type="button" class="popupbtn" value="Add" onClick="gpib.deviceConnect();"></input>
+            <input type="button" class="popupbtn" value="Remove" onClick="gpib.deviceRemove();"></input>
+
+            <p><b>Currently connected GPIB devices:</b>
+            
+            <textarea id="deviceViewer" rows="26" cols="74" readonly></textarea>
+            
+            <input type="text" id="regdev" onchange="register_device(this);" hidden="true"></input>
+
+        <div id="dlgbtns3">
+            <input type="button" class="popupbtn" value="Close" onClick="gpib.hideGpibDialog();"></input>
+        </div>
+    
+
+    </div>
+    
+
+
+</div>
+
+<script language="JavaScript">
+
+let tek;
+
+let gpib = new GPIB();
+gpib.initDialog();
+
+//let rtc = new(RTC);
+//let storage = new Storage();
+//let storage2 = new Storage();
+
+// Default devices
+gpib.register(1, new Loader(), "Program loader");
+gpib.register(2, new RTC(), "Real time clock");
+gpib.register(5, new Storage(), "4924 tape drive");
+//gpib.register(6, new Storage(), "4924 tape drive");
+
+
+let storage;
+
+// Fill the storage address select control and set first storage device
+fillStorageDevAddrSelect(storage, gpib);
+
+
+
+let baseSize = {
+    w: 1400,
+    h: 1100
+}
+
+
+let autoScaling = true;
+
+//var audioOn = true;
+//var osc;
+//var ctx;
+
+
+/*
+function startCtx(){
+    window.AudioContext = window.AudioContext || window.webkitAudioContext;
+    ctx = ctx.createOscillator();
+    osc.type = "sine";
+    osc.frequency.value = 261.63;
+}
+
+
+function stopCtx(){
+    ctx = "";
+}
+
+function startOsc(){
+    if (ctx) {
+        osc.start(0);
+        osc.connect(ctx.destination);
+    }
+}
+
+
+function stopOsc(){
+    osc.stop(0);
+}
+*/
+
+function tek_init() {
+
+    let canvas    = document.getElementById('screen');
+    
+    tek = new TEKTRONIX4051( window, canvas, gpib );
+    
+} // End of function tek_init.
+
+
+function tek_start() {
+
+    tek.execute_start.apply( tek );
+
+    document.getElementById('start').disabled   = true;
+    document.getElementById('stop').disabled    = false;
+    document.getElementById('gpibdlg').disabled    = false;
+    document.getElementById('storagedlg').disabled    = false;
+    document.getElementById('status_power').style.color = "#00EE00";
+    document.getElementById('start').blur();
+
+} // End of function tek_start.
+
+
+function tek_stop() {
+
+    tek.execute_stop.apply( tek );
+
+    document.getElementById('start').disabled = false;
+    document.getElementById('stop').disabled  = true;
+    document.getElementById('gpibdlg').disabled  = true;
+    document.getElementById('storagedlg').disabled  = true;
+    document.getElementById('status_power').style.color = "#005500";
+
+} // End of function tek_stop.
+
+
+function tek_reset() {
+
+    tek.execute_reset.call( tek );
+
+} // End of function tek_reset.
+
+
+// Obtains data from a file
+function tek_load() {
+
+  // See what file has been selected by the user (if any).
+  let file = document.getElementById('loadfile').files[0];
+  
+  // Ignore if no file has been selected by the user.
+  if( !file )
+    return;
+    
+  // Create a new instance of the FileReader to actually read the selected file.
+  let fread = new FileReader();
+  
+  // This is the function invoked after a successful file load.
+  fread.onload = function( levent ) {
+      upload_to_tek(levent.target.result);
+  } // End of function fread.onload.
+  
+  // Initiate the file load.
+  fread.readAsArrayBuffer( file );
+  
+} // End of function tek_load.
+
+
+// Uploads data to the Tek
+function upload_to_tek(buffer) {
+    let bytes = new Uint8Array(buffer);
+	let j = bytes.length;
+    if (j > 0){
+		// Load the program into Tek memory
+		tek.execute_load.call( tek, bytes ); // Source and destination data length may be different.
+	}else{
+		// If array is empty force a NO PRORGAM FOUND (error 69) to prevent BUSY hang
+		upload_to_tek_fail();
+    }    
+}
+
+
+// Force a NO PRORGAM FOUND (error 69) to prevent BUSY hang
+function upload_to_tek_fail() {
+	let bytes = new Uint8Array([0xFF]);
+//	j = 1;
+	tek.execute_load.call( tek, bytes );
+}
+
+
+function toggleAudioStatus(){
+    mutebtn = document.getElementById('mutespkr');
+	tek.audioOn = !tek.audioOn;
+    if (tek.audioOn) {
+        mutebtn.value = "♫ mute";
+        window.AudioContext = window.AudioContext || window.webkitAudioContext;       
+    }else{
+        mutebtn.value = "‼ mute";        
+    }
+}
+
+
+function updateScale() {
+
+    let ww = window.innerWidth;
+    let wh = window.innerHeight;
+    let box = document.getElementById("container");
+    let newScale;
+
+    // compare ratios
+    if(ww/wh < baseSize.w/baseSize.h) { // tall ratio
+        newScale = ww / baseSize.w;
+    } else { // wide ratio
+        newScale = wh / baseSize.h;        
+    }
+    
+    let scaleStr = `scale(1,1)`;
+
+    if (autoScaling === true) scaleStr = `scale(${newScale},${newScale})`;
+
+    box.style.transform = scaleStr;
+
+}
+
+
+function toggleScaling(){
+    let btnObj = document.getElementById("tscaling");
+    autoScaling = !autoScaling;
+    if (autoScaling) {
+        btnObj.value = "⇲";
+    }else{
+        btnObj.value = "⊞";
+    }
+    updateScale();
+}
+
+
+function toggleCPUspeed(){
+	let btnObj = document.getElementById("cpuspeedval");	
+	let btnstr = btnObj.value;
+	btnstr = btnstr.slice(1);
+	let btnval = parseInt(btnstr);
+	if (btnval >= 10) {
+		tmpval = (btnval/10) |0;
+	}else{
+		tmpval = btnval;
+	}
+	if (btnval >= 100) {
+		btnval = 1;
+	}else if(tmpval%5 == 0){	// Divisible by 5
+		btnval = btnval * 2;
+	}else if(tmpval%2 == 0){	// Divisible by 2
+		btnval = btnval * 2.5;
+	}else{
+		btnval = btnval * 2;
+	}
+	btnObj.value = "x" + btnval.toString();
+	tek.set_CPU_speed(btnval);
+}
+
+
+function toggleDisplayGranularity(){
+    let btnObj = document.getElementById("pixelsize");
+    let btnChar = btnObj.value;
+    let btnVal = btnChar.charCodeAt(0);
+//    console.log( "Btn: ", btnVal, "Char: ", btnVal.charCodeAt(0) );
+
+    switch (btnVal) {
+
+        case 8857:
+            btnObj.value = String.fromCharCode(8859);
+            tek.set_disp_granularity(3);
+            break;
+        case 8858:
+            btnObj.value = String.fromCharCode(8857);
+            tek.set_disp_granularity(1);
+            break;
+        case 8859:
+            btnObj.value = String.fromCharCode(8858);
+            tek.set_disp_granularity(2);
+            break;
+        default:        
+            btnObj.value = String.fromCharCode(8858);
+            tek.set_disp_granularity(2);
+
+    }
+
+
+}
+
+
+function fillStorageDevAddrSelect(){
+    let deviceAddrSelect = document.getElementById('deviceAddr');
+
+     // Clear the select control
+     let listlen = deviceAddrSelect.length;
+     while(listlen--){
+        deviceAddrSelect.remove(listlen);
+     }
+
+    // Iterate through registry and populate control
+    for (let i=0; i<gpib.deviceRegistry.length; i++) {
+        let classname = gpib.deviceRegistry[i][1].constructor.name;
+        if (classname === 'Storage') {
+
+            // Set storage to first registered instance
+            if (!storage) {
+                storage = gpib.deviceRegistry[i][1];
+            }
+
+            // Populate select control
+            let opt = document.createElement('option');
+            opt.textContent = gpib.deviceRegistry[i][0];
+            opt.value = gpib.deviceRegistry[i][0];
+            deviceAddrSelect.appendChild(opt);
+        }
+    }
+    deviceAddrSelect.selectedIndex = 0;
+}
+
+
+function storageSelect(gpib, addrselect){
+    // Get the selected address
+    let addr = parseInt(addrselect.options[addrselect.selectedIndex].value);
+
+    // Find the storage device
+    for (let i=0; i<gpib.deviceRegistry.length; i++) {
+        let classname = gpib.deviceRegistry[i][1].constructor.name;
+        if (classname === 'Storage') {
+
+            // Set storage to requested address
+            if (gpib.deviceRegistry[i][0] === addr) {
+                gpib.deviceRegistry[i][1].setControlsToDefault();
+                gpib.deviceRegistry[i][1].updateFileSelectList();
+                return gpib.deviceRegistry[i][1];
+            }
+        }
+    }
+    return "";
+}
+
+
+function register_device(regdevobj){
+//console.log("Registering...");
+    let regdevstr = regdevobj.value;
+    const regentry = regdevstr.split(':');
+    switch(regentry[1]) {
+    case 'L':
+        gpib.register(parseInt(regentry[0]), new Loader(), regentry[2]);
+        break;
+    case 'R':
+        gpib.register(parseInt(regentry[0]), new RTC(), regentry[2]);
+        break;            
+    case 'T':
+        gpib.register(parseInt(regentry[0]), new Storage(), regentry[2]);
+        fillStorageDevAddrSelect();
+        break;     
+    case 'P':
+        gpib.register(parseInt(regentry[0]), new Printer(), regentry[2]);
+        fillStorageDevAddrSelect();
+        break;     
+    }
+    
+//console.log("Registry: ", gpib.deviceRegistry);
+}
+
+
+
+/*
+function startOsc(){
+    if (tek.audioOn) {
+//        window.AudioContext = window.AudioContext || window.webkitAudioContext;
+        ctx = new AudioContext();
+        osc = ctx.createOscillator();
+        osc.type = "sine";
+        osc.frequency.value = 261.63;
+        osc.start(0);
+        osc.connect(ctx.destination);
+    }
+}
+
+
+function stopOsc(){
+    if (tek.audioOn) {
+        osc.stop(0);
+    }
+}
+*/
+</script>
+
+
+</body>
+
+</html>

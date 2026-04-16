@@ -1,0 +1,37 @@
+When using ES6:
+
+Both files end in .mjs
+
+export functionname() {
+}
+
+export class name {
+}
+
+import someobj from "./filename.mjs";
+
+let somevar = new(someobj);
+
+
+
+
+When using CommonJS:
+
+Both files end in .js
+
+At end of file:
+
+module.exports = classname;
+module.exports = functionname;
+
+const someobj = require('./filename.js');
+
+let somevar = new(someobj);
+
+
+
+In browsers, in script tag must add 'type = module'
+
+
+For node, file must be .mjs for ES6 or type = module added to package.json
+

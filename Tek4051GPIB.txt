@@ -1,0 +1,614 @@
+    // **********************
+    // ***                ***
+    // ***  PROCESS_GPIB  ***
+    // ***                ***
+    // **********************
+    
+    this.PROCESS_GPIB = function() {
+
+//		GPIBlog(this);
+
+
+        /*
+		console.log( 'PROCESS_GPIB:' );
+
+		if( GPIB_TALK   ) console.log( ' TALK   -' );
+		if( GPIB_LISTEN ) console.log( ' LISTEN -' );
+	
+		console.log( ' IFC=' ); this.printHex1( GPIB_IFC_OUT );
+		console.log( ' REN=' ); this.printHex1( GPIB_REN_OUT );
+		console.log( ' ATN=' ); this.printHex1( GPIB_ATN_OUT );
+		console.log( ' SRQ=' ); this.printHex1( GPIB_SRQ_IN  );
+
+		if( GPIB_TALK ) {
+		console.log( ' DATA=0x'  ); this.printHex2( GPIB_DATA_OUT );
+		console.log( ' EOI='     ); this.printHex1( GPIB_EOI_OUT  );
+		console.log( ' DAV='     ); this.printHex1( GPIB_DAV_OUT  );
+		console.log( ' NRFD='    ); this.printHex1( GPIB_NRFD_IN  );
+		console.log( ' NDAC='    ); this.printHex1( GPIB_NDAC_IN  );
+		} // End if GPIB_TALK.
+
+		if( GPIB_LISTEN ) {
+		console.log( ' DATA=0x'  ); this.printHex2( GPIB_DATA_IN );
+		console.log( ' EOI='     ); this.printHex1( GPIB_EOI_IN   );
+		console.log( ' DAV='     ); this.printHex1( GPIB_DAV_IN   );
+		console.log( ' NRFD='    ); this.printHex1( GPIB_NRFD_OUT );
+		console.log( ' NDAC='    ); this.printHex1( GPIB_NDAC_OUT );
+	    } */ // End if GPIB_LISTEN.
+		
+		// Process data from the 4051 to the GPIB.
+		if( GPIB_TALK ) {
+		
+			if( (GPIB_DAV_OUT == 1) && (GPIB_NDAC_IN == 1) ) {
+
+/*
+                if ( GPIB_EOI_OUT == 1 ) {
+                    console.log( "EOI signalled! (" + this.printHex2(GPIB_DATA_OUT) + ")" );
+                }
+*/
+			
+				// Some GPIB command data for me to process.
+
+				if( GPIB_ATN_OUT == 1 ) {
+
+					// Its a PRIMARY listen (MLA) or talk (MTA) address
+                    if ( (GPIB_DATA_OUT > 0x20) && (GPIB_DATA_OUT < 0x60) ) {
+
+                        ADDR_PRIMARY = GPIB_DATA_OUT;
+
+						// Look for the GPIB Primary Address (device #1 - emulator).
+						if( GPIB_DATA_OUT == 0x41 ) { // 0x41 == 65 == GPIB Device #1 Primary Talk Address.
+
+							// State '1' means that the file has been loaded and is awaiting the correct GPIB Primary Address.
+							//
+							if( GPIB_STATE == 1 ) {
+						
+								GPIB_STATE = 2; // File has been loaded and I have now seen the correct GPIB Primary Address.
+							
+							// State '0' means that a file has not been loaded - so I should just ignore the GPIB Primary Address.
+							//
+							} else if( GPIB_STATE == 0 ) {
+						
+								// Ignore as no file is loaded.
+							
+							// I have seen a correct GPIB Primary Address - but potentially out of context!
+							//
+							} else if( GPIB_STATE >= 2 ) {
+						
+								GPIB_STATE = 1; // Go back to the 'file loaded' state as obviously something has gone wrong with the protocol.
+							
+							} // End if.
+						 
+						} // End if correct GPIB Primary Address.
+
+
+						// Enable clock response on address 2
+/*
+						if( GPIB_DATA_OUT == 0x42 ) {
+							//
+							GPIB_RDTIME_STATE = 1;
+							//
+						}
+*/
+						if ( GPIB_DATA_OUT == 0x5F ) { // 0x5F == 95 == UNTALK.
+
+							if( GPIB_STATE == 0 ) {
+						
+								// Ignore as no file loaded.
+							
+							} else {
+						
+								GPIB_STATE = 1; // Force to 'waiting for the correct GPIB Primary Address'.
+								GPIB_RDTIME_STATE = 0;
+							
+							} // End if.
+
+							ADDR_PRIMARY = 0;
+							ADDR_SECONDARY = 0;
+						
+						} // End if looking for GPIB 'UNTALK' command.
+
+
+					// Its a SECONDARY address command
+                    }else if ( (GPIB_DATA_OUT > 0x5F) && (GPIB_DATA_OUT < 0x80) ) {	// Secondary address
+
+						ADDR_SECONDARY = GPIB_DATA_OUT;
+
+//						console.log("Primary address: " + this.printHex2(ADDR_PRIMARY));
+//						console.log("Secondary address: " + this.printHex2(ADDR_SECONDARY));
+
+						if (ADDR_PRIMARY && ADDR_SECONDARY) {
+
+					        // SAVE command (storage)
+						    if ( ADDR_SECONDARY == 0x61 ) {
+
+                                if (ADDR_PRIMARY == (ADDR_TAPE + 0x20)) {
+
+//						            console.log("Saving to file: " + current_fnumstr);
+								    storage.saveToStorageReady();
+
+                                } // End ADDR_PRIMARY
+
+							} // End of SAVE
+
+                            // CLOSE command (storage)
+                            if (ADDR_SECONDARY == 0x62) {
+
+                                if (ADDR_PRIMARY == (ADDR_TAPE + 0x20)) {
+
+//                                    console.log("Closing current file...");
+                                    storage.closeFile();
+//                                    console.log("Done.");
+
+                                }   // End ADDR_PRIMARY
+
+                            }   // End of CLOSE
+
+
+							// OLD/APPEND command (storage)
+							if ( ADDR_SECONDARY == 0x64 ) {
+
+							    if ( ADDR_PRIMARY == 0x41 ) {	// GPIB primary address = MTA1
+
+									this.signalProgLoaded();
+
+								} // End ADDR_PRIMARY == 0x41
+
+                                if ( ADDR_PRIMARY == (ADDR_TAPE + 0x40) ) {
+							        if (current_fnumstr) {
+									    storage.readFromStorage(current_fnumstr, 'A');
+									    if (current_fnumstr != '0') this.signalProgLoaded();
+                                    }
+								} // End ADDR_PRIMARY
+
+							} // End of OLD/APPEND
+							
+							// BSAVE comand (save binary program)
+							if ( ADDR_SECONDARY == 0x71 ) {
+								if (ADDR_PRIMARY == (ADDR_TAPE + 0x20)) {
+
+								    storage.saveToStorageReady();
+
+                                } // End ADDR_PRIMARY
+                                
+							} // End BSAVE command
+
+						} // ADDR_PRIMARY && ADDR_SECONDARY
+
+						//console.log( 'PROCESS_GPIB: COMMAND=0x' ); this.printHex2( GPIB_DATA_OUT ); this.println('');
+
+						if( GPIB_DATA_OUT == 0x6D ) {
+							//
+                            if ( ADDR_PRIMARY == 0x42 ) {
+//							if( GPIB_RDTIME_STATE == 1 ) {
+								//
+								var d = new Date();
+								//
+								var m = [ "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC" ];
+								//
+								GPIB_RDTIME = "";
+								//
+								var i;
+								//
+								i = d.getDate(); if( i < 10) GPIB_RDTIME += "0"; GPIB_RDTIME += ("" + i);
+								GPIB_RDTIME += "-";
+								GPIB_RDTIME += m[ d.getMonth() ];
+								GPIB_RDTIME += "-";
+								i = d.getFullYear() % 100; if( i < 10) GPIB_RDTIME += "0"; GPIB_RDTIME += ("" + i);
+								GPIB_RDTIME += " ";
+								i = d.getHours(); if( i < 10) GPIB_RDTIME += "0"; GPIB_RDTIME += ("" + i);
+								GPIB_RDTIME += ":";
+								i = d.getMinutes(); if( i < 10) GPIB_RDTIME += "0"; GPIB_RDTIME += ("" + i);
+								GPIB_RDTIME += ":";
+								i = d.getSeconds(); if( i < 10) GPIB_RDTIME += "0"; GPIB_RDTIME += ("" + i);
+								//
+								GPIB_RDTIME_INDEX = 0; // First character of the DATE/TIME string.
+								//
+								//console.log( 'PROCESS_GPIB: RDTIME = ' + GPIB_RDTIME );
+								//
+								GPIB_RDTIME_STATE = 2;
+								//
+							} // End if GPIB_RDTIME_STATE
+							//
+						} // End if GPIB_DATA_OUT == 0x6D
+
+					}	// End decoding GPIB byte during ATN
+
+				} // End GPIB_ATN_OUT = 1
+
+				// Send some parameter or data
+				if( GPIB_ATN_OUT == 0 ) {
+
+					//console.log("Primary address: " + this.printHex2(ADDR_PRIMARY));
+					//console.log("Secondary address: " + this.printHex2(ADDR_SECONDARY));
+					//console.log("GPIB data out: " + this.printHex2(GPIB_DATA_OUT));
+
+					if ( ADDR_PRIMARY && ADDR_SECONDARY) {
+
+						// console.log("Primary and secondary address set.");
+
+						// SAVE command (storage)
+						if ( (ADDR_PRIMARY == (ADDR_TAPE + 0x20)) && (ADDR_SECONDARY == 0x61) ) {
+						    if (current_fnumstr) {
+						        storage.saveToStorageBin(GPIB_DATA_OUT);
+								if (GPIB_EOI_OUT) storage.saveToStorageDone(current_fnumstr, 'A');
+							}
+						}
+
+                        // PRINT command (storage)
+                        if ( (ADDR_PRIMARY == (ADDR_TAPE + 0x20)) && (ADDR_SECONDARY == 0x6C) ) {
+                            storage.printToFile(GPIB_DATA_OUT);
+                            if (GPIB_DATA_OUT == '0x0D') storage.writeToFileDone();
+                        }
+
+                        // WRITE command (storage)
+                        if ( (ADDR_PRIMARY == (ADDR_TAPE + 0x20)) && (ADDR_SECONDARY == 0x6F) ) {
+//console.log(this.printHex2(GPIB_DATA_OUT));
+//console.log("Writing...");
+                            storage.writeToFile(GPIB_DATA_OUT);
+                            if (bin_byte_cnt == 0) {
+                                bin_data_type = ((GPIB_DATA_OUT&0xE0)>>5) + 2;
+                                bin_data_length = (GPIB_DATA_OUT&0x1F)*256;
+                            }
+//console.log("Data len1: " + bin_data_length);
+                            if (bin_byte_cnt == 1) {
+                                bin_data_length = bin_data_length + GPIB_DATA_OUT;
+                                if (bin_data_type == 4) bin_data_length++;  // Text data has one extra byte?
+                            }
+//console.log("Data len2: " + bin_data_length);
+                            bin_byte_cnt++;
+                            if (bin_byte_cnt == bin_data_length+2) {
+                                bin_byte_cnt = 0;
+                                bin_data_length = 0;
+                                bin_data_type = 0;
+                                storage.writeToFileDone();
+//console.log("Write complete.");
+                            }
+                        }
+
+						// BSAVE command (storage)
+						if ( ADDR_SECONDARY == 0x71 ) {
+                            if ( ADDR_PRIMARY == (ADDR_TAPE + 0x20) ) {
+						        if (current_fnumstr) {
+						            storage.saveToStorageBin(GPIB_DATA_OUT);
+								    if (GPIB_EOI_OUT) storage.saveToStorageDone(current_fnumstr, 'B');
+							    }
+                            }
+						}
+
+                        // DIR command (send file  name)
+						if ( ADDR_SECONDARY == 0x73 ) {
+                            storage.setDirEntry(GPIB_DATA_OUT);
+                        }
+
+
+				        // FIND command (storage)
+						if ( (ADDR_PRIMARY == (ADDR_TAPE + 0x20)) && (ADDR_SECONDARY == 0x7B) ) {
+
+							// Preceding space singals new file number
+							if (GPIB_DATA_OUT == 0x20) current_fnumstr = "";
+
+                            // CR signals end of data
+                            if (GPIB_DATA_OUT == 0x0D) {
+                                storage.findFile(current_fnumstr);
+//                                console.log("Set file number to: " + current_fnumstr);
+                            }
+
+							// Add numeric digits to file number string
+							if (GPIB_DATA_OUT > 0x29 && GPIB_DATA_OUT < 0x3A) {
+ 							    current_fnumstr += String.fromCharCode(GPIB_DATA_OUT);
+                                // Clear file counters
+                                bin_byte_cnt = 0;
+                                bin_data_len = 0;
+							}						
+						}   // END of FIND command
+
+					} // END of ADDR_PRIMARY && ADDR_SECONDARY
+
+				} // End of GPIB_ATN_OUT = 0
+
+
+			} // End GPIB_DAV_OUT / GPIB_NDAC_IN (outbound data to process).
+
+			GPIB_NDAC_IN = GPIB_DAV_OUT ^ 0x01; // Invert before return.				
+		
+		} // End of GPIB_TALK.
+		
+
+		if( GPIB_LISTEN ) {
+
+            if( GPIB_ATN_OUT == 0 ) {
+
+                if ( ADDR_PRIMARY && ADDR_SECONDARY) {
+
+                    // PWD command (Emulator does not support direcories. This simply returns '/root'/)
+                    if ( ADDR_SECONDARY == 0x69 ) {
+
+                        if ( ADDR_PRIMARY == (ADDR_TAPE+0x40) ) {
+                            GPIB_STATE = 9; // Signal we are ready to read the directory name
+                        }
+
+                    }   // End of DIR command
+
+
+                    // INPUT command (storage)
+                    if ( (ADDR_SECONDARY == 0x6A ) || (ADDR_SECONDARY == 0x6D) ) {
+
+                        if ( ADDR_PRIMARY == (ADDR_TAPE+0x40) ) {
+                            GPIB_STATE = 5; // Signal we are ready to read ASCII data
+                        }
+
+                    } // End of INPUT command
+
+
+                    // READ command (storage)
+                    if ( ADDR_SECONDARY == 0x6E ) {
+
+                        if ( ADDR_PRIMARY == (ADDR_TAPE+0x40) ) {
+                            GPIB_STATE = 6; // Signal we are ready to read BINARY data
+                        }
+
+                    } // End of READ command
+
+                    // BOLD command (storage)
+                    if ( ADDR_SECONDARY == 0x71 ) {
+
+                        if ( ADDR_PRIMARY == (ADDR_TAPE+0x40) ) {
+                            GPIB_STATE = 7; // Signal we are ready to read BINARY PROGRAM
+                        }
+
+                    } // End of BOLD command
+
+                    // TLIST command (storage)
+                    if ( ADDR_SECONDARY == 0x73 ) {
+
+                        if ( ADDR_PRIMARY == (ADDR_TAPE+0x40) ) {
+                            GPIB_STATE = 8; // Signal we are ready to get the next directory entry
+                        }
+
+                    } // End of BOLD command
+
+                } // End of ADDR_PRIMARY && ADDR_SECONDARY
+
+            } // End of GPIB_ATN_OUT = 0
+
+		} // End of GPIB_LISTEN.
+		
+//		GPIB_NDAC_IN = GPIB_DAV_OUT ^ 0x01; // Invert before return.
+
+    } // End of function PROCESS_GPIB.
+
+    // *******************
+    // ***             ***
+    // ***  POLL_GPIB  ***
+    // ***             ***
+    // *******************
+    
+    this.POLL_GPIB = function() {
+    
+		if( GPIB_LISTEN ) {
+		
+            // Read a program into emulator memory
+			if( (GPIB_NDAC_OUT == 0) && (GPIB_NRFD_OUT == 1) && (GPIB_DAV_IN == 0) && (GPIB_STATE == 3) ) {
+			
+				// Are there any (more) characters to send?
+				if( (this.sbytesindex >= 0) && (this.sbytesindex < this.sbyteslength) ) {
+				
+					// Send a new data byte to the 4015.
+					//
+					GPIB_DATA_IN = this.sbytes[ this.sbytesindex ];
+					//console.log(" *** GPIB_DATA_IN " + GPIB_DATA_IN);
+					//console.log(" ** index = " + this.sbytesindex);
+					
+					// Is this the 'last' character?
+					//
+					if( this.sbytesindex == (this.sbyteslength - 1) ) GPIB_EOI_IN = 1;
+					else                                              GPIB_EOI_IN = 0;
+				
+					// Bump the index.
+					//
+					this.sbytesindex++;
+					
+					//if( GPIB_EOI_IN == 1 ) { this.print('POLL_GPIB: EOI set with DATA=0x'); this.printHex2( GPIB_DATA_IN ); //this.println(''); }
+					
+					GPIB_DAV_IN = 1; // Signify that you have new data.
+				
+					//console.log( 'GPIB: >>>>>>>>>>>>>>>>>>>>>>>>>> Send new data to the 4051 and set the DAV flag...' );
+					//console.log(   'GPIB: >>>>>>>>>>>>>>>>>>>>>>>>>> Data was 0x' ); this.printHex2( GPIB_DATA_IN ); this.println( '.' );
+				
+					if( GPIB_EOI_IN == 1 ) {
+				
+						//console.log( 'GPIB: >>>>>>>>>>>>>>>>>>>>>>>>>> Setting EOI flag...' );		
+					
+						// Check to see if PIA U265 CRA CA1 input is set for an active high-going edge interrupt.
+						//
+						if( ( (PIA_U265_CRA >>> 0) & 0x03 ) == 0x03 ) {
+				
+							// YES
+					
+							//console.log( 'GPIB: >>>>>>>>>>>>>>>>>>>>>>>>>> Setting PIA U265 IRQA1...' );
+						
+							//Set IRQA1 interrupt bit in PIA U265 CRA.
+					
+							// PIA_U265_CRA |= 0x80; @@@ Disable for now...
+					
+						} // End if is the PIA permitted to generate an interrupt.
+				
+					} // End if should we set the EOI flag.
+				
+				} // End if any more character to send of the program.
+
+
+            // Read in date and time
+			} else if( (GPIB_NDAC_OUT == 0) && (GPIB_NRFD_OUT == 1) && (GPIB_DAV_IN == 0) && (GPIB_RDTIME_STATE == 2) ) {
+
+				// Send a data byte to the 4051.
+				//
+				GPIB_DATA_IN = GPIB_RDTIME.charCodeAt( GPIB_RDTIME_INDEX ) & 0x7F;
+					
+				// Is this the 'last' character?
+				//	
+				if( GPIB_RDTIME_INDEX == (GPIB_RDTIME.length - 1) ) GPIB_EOI_IN = 1;
+				else                                                     GPIB_EOI_IN = 0;
+				
+				// Bump the index.
+				//
+				GPIB_RDTIME_INDEX++;
+
+				//console.log('POLL_GPIB: RDTIME DATA=0x'); this.printHex2( GPIB_DATA_IN ); this.println('');
+					
+				//@@@ if( GPIB_EOI_IN == 1 ) { this.print('POLL_GPIB: RDTIME_EOI set with DATA=0x'); this.printHex2( GPIB_DATA_IN ); this.println(''); }
+					
+				if( GPIB_EOI_IN == 1 ) GPIB_RDTIME_STATE = 0;
+				
+				GPIB_DAV_IN = 1; // Signify that you have new data.
+
+
+            // Read ASCII data from storage (INPUT)
+			} else if( (GPIB_NDAC_OUT == 0) && (GPIB_NRFD_OUT == 1) && (GPIB_DAV_IN == 0) && (GPIB_STATE == 5) ) {
+
+                
+//console.log("INPUT sec address: " + this.printHex2(ADDR_SECONDARY));
+				if (ADDR_SECONDARY == 0x6A) {
+                    var value = storage.copyFromFile();
+                    GPIB_DATA_IN = value & 0xFF;
+                    GPIB_EOI_IN = (value & 0x0100) >> 8;
+//console.log("Data: " + this.printHex2(GPIB_DATA_IN));
+//console.log("Receive EOI: " + this.printHex2(GPIB_EOI_IN));
+			        // Is this the 'last' character?
+                    if (GPIB_DATA_IN == 0x80) {
+                        GPIB_EOI_IN = 1;
+				    }else{
+                        GPIB_EOI_IN = 0;
+                    }
+                }
+
+				if (ADDR_SECONDARY == 0x6D) {
+                    GPIB_DATA_IN = storage.inputFromFile();
+//console.log("Data: " + this.printHex2(GPIB_DATA_IN));
+				    // Is this the 'last' character?
+                    if (GPIB_DATA_IN == 0x0D) {
+                        GPIB_EOI_IN = 1;
+				    }else{
+                        GPIB_EOI_IN = 0;
+                    }
+                }
+					
+				if( GPIB_EOI_IN == 1 ) GPIB_STATE = 0;
+				
+				GPIB_DAV_IN = 1; // Signify that you have new data.
+
+
+            // Read BINARY data from storage (READ)
+			} else if( (GPIB_NDAC_OUT == 0) && (GPIB_NRFD_OUT == 1) && (GPIB_DAV_IN == 0) && (GPIB_STATE == 6) ) {
+
+				// Read a data byte from the 4051.
+				GPIB_DATA_IN = storage.readFromFile();
+
+//console.log(this.printHex2(GPIB_DATA_IN));
+
+                if (bin_byte_cnt == 0) {
+                    bin_data_type = ((GPIB_DATA_IN&0xE0)>>5)+2;
+                    bin_data_length = (GPIB_DATA_IN&0x1F)*256;
+                }
+//console.log("Data len1: " + bin_data_length);
+                if (bin_byte_cnt == 1) {
+                    bin_data_length = bin_data_length + GPIB_DATA_IN;
+                    if (bin_data_type == 4) bin_data_length++;  // Text data has one extra byte?
+//console.log("Data len2: " + bin_data_length);
+                }
+                bin_byte_cnt++;
+                if (bin_byte_cnt == bin_data_length+2) {
+                    bin_byte_cnt = 0;
+                    bin_data_length = 0;
+                    bin_data_type = 0;
+                    GPIB_EOI_IN = 1;
+
+//console.log("Write complete.");
+                }else{
+                    GPIB_EOI_IN = 0;
+                }
+
+				if( GPIB_EOI_IN == 1 ) GPIB_STATE = 0;
+				
+				GPIB_DAV_IN = 1; // Signify that you have new data.
+
+
+            // Read BINARY PROGRAM from storage
+			} else if( (GPIB_NDAC_OUT == 0) && (GPIB_NRFD_OUT == 1) && (GPIB_DAV_IN == 0) && (GPIB_STATE == 7) ) {
+
+				// Send a data byte to the 4051.
+				//
+                var value = storage.readBinProg() & 0xFF;
+
+                if (value == -1) {
+                    GPIB_EOI_IN = 1;   // Error - signal EOI to terminate
+                }else{
+                    GPIB_DATA_IN = value & 0xFF;
+                    GPIB_EOI_IN = value & 0x0100;   // Is EOI bit set ?
+//console.log(this.printHex2(GPIB_DATA_IN));
+                }
+					
+				if( GPIB_EOI_IN == 1 ) GPIB_STATE = 3;
+
+                // Possibly GPIB_STATE = 3 - program loaded
+				GPIB_DAV_IN = 1; // Signify that you have new data.
+
+
+            // Read directory entry (TLIST) from storage (via INPUT @5,19)
+			} else if( (GPIB_NDAC_OUT == 0) && (GPIB_NRFD_OUT == 1) && (GPIB_DAV_IN == 0) && (GPIB_STATE == 8) ) {
+
+				if (ADDR_SECONDARY == 0x73) {
+                    GPIB_DATA_IN = storage.getDirEntry();
+//console.log(this.printHex2(GPIB_DATA_IN));
+				    // Is this the 'last' character?
+                    if (GPIB_DATA_IN == 0x0D) {
+                        GPIB_EOI_IN = 1;
+				    }else{
+                        GPIB_EOI_IN = 0;
+                    }
+                }
+					
+				if( GPIB_EOI_IN == 1 ) GPIB_STATE = 0;
+				
+				GPIB_DAV_IN = 1; // Signify that you have new data.
+
+
+            // Read the directory name from storage (via INPUT @5,9)
+			} else if( (GPIB_NDAC_OUT == 0) && (GPIB_NRFD_OUT == 1) && (GPIB_DAV_IN == 0) && (GPIB_STATE == 9) ) {
+
+				if (ADDR_SECONDARY == 0x69) {
+                    GPIB_DATA_IN = storage.getDirectory();
+//console.log(this.printHex2(GPIB_DATA_IN));
+				    // Is this the 'last' character?
+                    if (GPIB_DATA_IN == 0x0D) {
+                        GPIB_EOI_IN = 1;
+				    }else{
+                        GPIB_EOI_IN = 0;
+                    }
+                }
+					
+				if( GPIB_EOI_IN == 1 ) GPIB_STATE = 0;
+				
+				GPIB_DAV_IN = 1; // Signify that you have new data.
+
+				
+			} else if( (GPIB_NDAC_OUT == 1) && (GPIB_DAV_IN == 1) ) {
+
+				GPIB_DAV_IN = 0; // Clear the data available flag.
+
+				GPIB_EOI_IN = 0; // Clear the EOI flag. WARNING: This needs to be here to permit a <BREAK> to occur when commanded by the human!
+				
+				//console.log( 'GPIB: >>>>>>>>>>>>>>>>>>>>>>>>>> Cleared the EOI and DAV flag...' );
+				
+			} else {
+			
+				// TODO:
+			
+			} // End if.
+			
+		} // End if GPIB_LISTEN.
+		
+    } // End of function POLL_GPIB.
+    
+    

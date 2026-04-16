@@ -1,0 +1,330 @@
+Key mappings:
+
+Key:	ASCII:	Hex:	Tek:
+----------------------------
+
+
+"		32		22		32
+!		33		21		31	
+#		35		23		33
+$		36		24		34
+%		37		25		35
+&		38		26		36
+'		39		27		37
+(		40		28		38
+)		41		29		39
+*		42		2A		2A 	3A?
++		43		2B		2B	3B?
+,		44		2C		2C	3C?
+-		45		2D		2D
+
+.		46		2E		2E
+/		47		2F		2F
+
+;		59		3B		3B
+<		60		3C		3C
+=		61		3D		3D
+>		62		3E		3E
+?		63		3F		3F
+
+[		91		5B		5B
+\		92		5C		5C
+]		93		5D		5D
+
+_		95		5F		5F
+`		96		60		40
+
+{		125		7B		7B
+~		126		7E		5E	
+}
+
+
+
+:		58		3A	
+
+|		124		7C
+
+TAB
+
+
+
+Characters by code - no shift:
+
+000:
+001: A_
+002: B_
+003: C_
+004: D_
+005: E_
+006: F_
+007: G_
+008: H_
+009: I_
+010: J_
+011: K_
+012: L_
+013: CR
+014: N_
+015: O_
+016: SPC
+017: Q_
+018: R_
+019: S_
+020: T_
+021: U_
+022: V_
+023: W_
+024: X_
+025: Y_
+026: Z_
+027: [
+028: \
+029: ]
+030: |
+031: _
+032: 0
+033: 1
+034: 2
+035: 3
+036: 4
+037: 5
+038: 6
+039: 7
+040: 8
+041: 9
+042: *
+043: +
+044: ,
+045: -
+046: .
+047: /
+048: 0
+049: !
+050: "
+051: #
+052: $
+053: %
+054: &
+055: '
+056: (
+057: )
+058: *
+059: +
+060: <
+061: =
+062: >
+063: ?
+064: `
+065: A
+066: B
+067: C
+068: D
+069: E
+070: F
+071: G
+072: H
+073: I
+074: J
+075: K
+076: L
+077: M
+078: N
+079: O
+080: P
+081: Q
+082: R
+083: S
+084: T
+085: U
+086: V
+087: W
+088: X
+089: Y
+090: Z
+091: {
+092: |
+093: }
+094: ~
+095: _
+096: nothing
+097: nothing
+098: nothing
+099: nothing
+100: nothing
+101: nothing
+102: nothing
+103: nothing
+104: nothing
+105: nothing
+106: nothing
+107: nothing
+108: nothing
+109: nothing
+110: nothing
+111: nothing
+112: CR
+113: nothing
+114: SPC
+115: CR
+116: nothing
+117: 100spc (New program line)
+118: nothing
+119: NL
+120: x
+121: y
+122: z
+123: {
+124: |^
+125: (
+126: )
+127: E (erase?)
+
+
+
+
+
+
+
+Tektronix key codes:
+
+
+000 [00]
+001 [01]
+002 [02]
+003 [03]
+004 [04]
+005 [05]
+006 [06]
+007 [07]
+008 [08] BACKSPACE
+009 [09] TAB
+010 [0A] LF
+011 [0B]
+012 [0C]
+013 [0D] RETURN
+014 [0E]
+015 [0F]
+016 [10] SPACE
+017 [11]
+018 [12]
+019 [13]
+020 [14]
+021 [15]
+022 [16]
+023 [17]
+024 [18]
+025 [19]
+026 [1A]
+027 [1B] ESCAPE
+028 [1C]
+029 [1D]
+030 [1E]
+031 [1F]
+032 [20] 0 (numeric key pad)
+033 [21] 1 (numeric key pad)
+034 [22] 2 (numeric key pad)
+035 [23] 3 (numeric key pad)
+036 [24] 4 (numeric key pad)
+037 [25] 5 (numeric key pad)
+038 [26] 6 (numeric key pad)
+039 [27] 7 (numeric key pad)
+040 [28] 8 (numeric key pad)
+041 [29] 9 (numeric key pad)
+042 [2A] * (numeric key pad)
+043 [2B] + (numeric key pad)
+044 [2C]
+045 [2D] - (numeric key pad)
+046 [2E] . (numeric key pad)&
+047 [2F] / (numeric key pad)
+048 [30] 0
+049 [31] 1	shifted !
+050 [32] 2	shifted "
+051 [33] 3	shifted #
+052 [34] 4	shifted $
+053 [35] 5	shifted %
+054 [36] 6 	shifted &
+055 [37] 7	shifted '
+056 [38] 8	shifted (
+057 [39] 9	shifted )
+058 [3A] :	shifted *
+059 [3B] ;	shifted +
+060 [3C] ,	shifted <
+061 [3D] -	shifted =
+062 [3E] .	shifted >
+063 [3F] /	shifted ?
+064 [40] @	shifted `
+065 [41] A
+066 [42] B
+067 [43] C
+068 [44] D
+069 [45] E
+070 [46] F
+071 [47] G
+072 [48] H
+073 [49] I
+074 [4A] J
+075 [4B] K
+076 [4C] L
+077 [4D] M
+078 [4E] N
+079 [4F] O
+080 [50] P
+081 [51] Q
+082 [52] R
+083 [53] S
+084 [54] T
+085 [55] U
+086 [56] V
+087 [57] W
+088 [58] X
+089 [59] Y
+090 [5A] Z
+091 [5B] [	shifted {
+092 [5C] \	shifted |
+093 [5D] ]	shifted }
+094 [5E] ^	shifted ~
+095 [5F] RUBOUT
+096 [60] FK1
+097 [61] FK2
+098 [62] FK3
+099 [63] FK4
+100 [64] FK5
+101 [65] FK6
+102 [66] FK7
+103 [67] FK8
+104 [68] FK9
+105 [69] FK10
+106 [6A] PAGE
+107 [6B] BREAK
+108 [6C] REWIND		(tape control)
+109 [6D] MAKE COPY	(tape control)
+010 [6E] 
+111 [6F]
+112 [70] EXPAND 	(line editing)
+113 [71] BACKSPACE	(line editing)
+114 [72] SPACE		(line editing)
+115 [73] CLEAR		(line editing)
+116 [74] RECALL		(line editing)
+117 [75] AUTO NUM	(program control)
+118 [76] STEP PROG	(program control)
+119 [77] AUTO LOAD	(tape control)
+120 [78]
+121 [79]
+122 [7A]
+123 [7B]
+124 [7C] ^ (numeric key pad)
+125 [7D] ( (numeric key pad)
+126 [7E] ) (numeric key pad)
+127 [7F] E (numeric key pad)
+
+CTRL		(no code - direct control line to PIA)
+TTY LOCK	(no code - direct control line to PIA)
+SHIFT(L)	(no code - direct control line to PIA)
+SHIFT(R)	(no code - direct control line to PIA)
+
+
+
+2E RUB OUT
+7C PAGE
+7D BREAK
+
